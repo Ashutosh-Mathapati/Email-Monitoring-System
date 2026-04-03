@@ -1,19 +1,11 @@
 # 🔐 Environment variables (VERY IMPORTANT)
 .env
-.env.*
 
 # 📦 Node modules
 node_modules/
 
-
-
-
 # ⚙️ VS Code settings (optional)
 .vscode/
-
-
-
-
 # 🗄️ Database (optional - keep if sensitive)
  *.db
 
