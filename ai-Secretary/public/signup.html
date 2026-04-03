@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <title>AI Secretary - Signup</title>
+</head>
+<body class="bg-slate-50 flex items-center justify-center h-screen">
+    <div class="bg-white p-8 rounded-xl shadow-xl w-96 border border-slate-200">
+        <h2 class="text-2xl font-bold text-slate-800 mb-6 text-center">Executive Setup</h2>
+        <form action="/api/signup" method="POST" class="space-y-4">
+            <div>
+                <label class="block text-sm font-medium text-slate-600">Executive Email</label>
+                <input type="email" name="email" required class="w-full mt-1 p-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-slate-600">Track Emails From:</label>
+                <input type="datetime-local" name="startDate" required class="w-full mt-1 p-2 border rounded-lg">
+            </div>
+            <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded-lg font-bold hover:bg-blue-700 transition">
+                Start Tracking & Login
+            </button>
+        </form>
+    </div>
+</body>
+</html>

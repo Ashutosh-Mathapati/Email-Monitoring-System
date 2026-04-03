@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <title>AI Secretary Dashboard</title>
+</head>
+<body class="bg-slate-100 p-8">
+    <div class="max-w-5xl mx-auto">
+        <h1 class="text-3xl font-extrabold text-slate-900 mb-8">Executive Secretary Command Center</h1>
+        
+        <div id="dashboard-container" class="grid gap-6">
+            <div class="rounded-2xl border border-slate-200 bg-white p-6 text-slate-500">
+                Loading dashboard...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function approve(id) {
+            const res = await fetch("/api/tasks/approve", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id })
+            });
+
+            if (!res.ok) {
+                alert("Unable to approve this task right now.");
+                return;
+            }
+
+            loadDashboard();
+        }
+
+        async function loadDashboard() {
+            const res = await fetch("/api/dashboard");
+            const cards = await res.json();
+            const container = document.getElementById("dashboard-container");
+
+            if (!Array.isArray(cards) || cards.length === 0) {
+                container.innerHTML = `
+                    <div class="rounded-2xl border border-slate-200 bg-white p-6 text-slate-500">
+                        No pending tasks yet.
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = cards.map((card) => `
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="p-5 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
+                        <div>
+                            <h3 class="font-bold text-slate-800 text-lg">${card.subject || "Untitled email"}</h3>
+                            <p class="text-sm text-slate-500">From: ${card.sender_email || "Unknown sender"}</p>
+                        </div>
+                        <span class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-bold uppercase">
+                            AI Analyzed
+                        </span>
+                    </div>
+                    <div class="p-5">
+                        <p class="text-blue-600 font-semibold mb-4 italic">"${card.summary || card.tasks?.[0]?.summary || "No summary available."}"</p>
+                        <div class="space-y-3">
+                            ${(card.tasks || []).map((task, index) => `
+                                <div class="flex items-center gap-4 p-3 bg-slate-50 rounded-xl border border-slate-100">
+                                    <input type="number" value="${index + 1}" class="w-12 text-center border-2 border-blue-200 rounded-lg font-bold text-blue-600" readonly>
+                                    <div class="flex-grow font-medium text-slate-700">${task.action_item}</div>
+                                    <span class="text-xs font-bold ${task.priority === "High" ? "text-red-500" : task.priority === "Medium" ? "text-orange-500" : "text-slate-500"}">${task.priority || "Low"}</span>
+                                    <button onclick="approve(${task.id})" class="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-1 rounded-lg text-sm font-bold transition">
+                                        Approve
+                                    </button>
+                                </div>
+                            `).join("")}
+                        </div>
+                    </div>
+                </div>
+            `).join("");
+        }
+
+        loadDashboard();
+    </script>
+</body>
+</html>
