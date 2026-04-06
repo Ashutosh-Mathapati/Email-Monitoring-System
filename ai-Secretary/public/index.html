@@ -2,131 +2,196 @@
 <html lang="en">
 <head>
     <script src="https://cdn.tailwindcss.com"></script>
-    <title>Executive Command Center</title>
+    <title>Executive Dashboard</title>
+    <style>
+        body { background: #120808; color: #fff; }
+        .glass-card { background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255,255,255,0.05); backdrop-filter: blur(10px); }
+        .task-row { background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255,255,255,0.05); }
+        .btn-schedule { background: linear-gradient(135deg, #2563eb, #1d4ed8); }
+        input[type="number"]::-webkit-inner-spin-button { display: none; }
+        /* Fix for the Dropdown colors */
+        select {
+            appearance: none; /* Removes default arrow */
+            background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right 0.7rem center;
+            background-size: 1em;
+            padding-right: 2.5rem !important;
+        }
+        /* Style the popup list (options) */
+        select option {
+            background-color: #1a0b0b; /* Dark background */
+            color: white;
+            padding: 10px;
+        }
+        /* Specific Priority Colors */
+        .pri-high { background-color: rgba(239, 68, 68, 0.1); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.2); }
+        .pri-med  { background-color: rgba(245, 158, 11, 0.1); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.2); }
+        .pri-low  { background-color: rgba(16, 185, 129, 0.1); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.2); }
+    </style>
 </head>
-<body class="bg-slate-50 min-h-screen p-8">
-    <div class="max-w-4xl mx-auto">
-        <header class="flex justify-between items-center mb-10">
-            <div>
-                <h1 class="text-3xl font-black text-slate-900 tracking-tight">EXECUTIVE AGENT</h1>
-                <p class="text-slate-500 font-medium">AI-Powered Inbox Management</p>
+<body class="p-8 font-sans">
+    <div class="max-w-6xl mx-auto">
+        <!-- Header Section -->
+        <header class="flex justify-between items-center mb-12">
+            <div class="flex items-center gap-4">
+                <div class="bg-orange-600 p-3 rounded-2xl shadow-lg shadow-orange-900/20">
+                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+                </div>
+                <div>
+                    <h1 class="text-2xl font-black tracking-tight uppercase">Executive Agent</h1>
+                    <p class="text-xs text-slate-500 font-bold tracking-widest uppercase opacity-60">AI-Powered Inbox Management</p>
+                </div>
             </div>
-            <button onclick="loadDashboard()" class="bg-white border border-slate-200 shadow-sm px-6 py-2 rounded-full font-bold text-slate-600 hover:bg-slate-100 transition">
-                ↻ Refresh Dashboard
-            </button>
+            <div class="flex gap-4">
+                <div class="flex items-center gap-2 bg-white/5 px-4 py-2 rounded-full border border-white/10">
+                    <div class="w-2 h-2 bg-green-500 rounded-full animate-ping"></div>
+                    <span class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Live</span>
+                </div>
+                <button onclick="loadDashboard()" class="bg-white/5 border border-white/10 px-6 py-2 rounded-full font-bold text-sm hover:bg-white/10 transition">Refresh Dashboard</button>
+            </div>
         </header>
 
-        <div id="dashboard-container" class="space-y-8">
-            <!-- Cards will load here -->
-            <div class="text-center py-20 text-slate-400 font-medium bg-white rounded-3xl border-2 border-dashed border-slate-200">
-                Waiting for AI analysis... (Send an email to see tasks)
-            </div>
-        </div>
+        <!-- Stats Bar -->
+        <div id="stats-bar" class="grid grid-cols-3 gap-6 mb-12"></div>
+
+        <!-- Email Groups -->
+        <div id="dashboard-container" class="space-y-10"></div>
     </div>
 
     <script>
-    async function loadDashboard() {
-        try {
-            const res = await fetch('/api/dashboard');
-            const cards = await res.json();
-            const container = document.getElementById('dashboard-container');
+        function getPriorityColor(p) {
+            if (p === 'High') return 'text-red-400 border-red-500/30 bg-red-500/10';
+            if (p === 'Medium') return 'text-orange-400 border-orange-500/30 bg-orange-500/10';
+            return 'text-green-400 border-green-500/30 bg-green-500/10';
+        }
 
-            if (!Array.isArray(cards) || cards.length === 0) {
-                container.innerHTML = `
-                    <div class="text-center py-20 text-slate-400 font-medium bg-white rounded-3xl border-2 border-dashed border-slate-200">
-                        All caught up! Send an email to see new tasks.
-                    </div>`;
+        function getDateBadge(type) {
+            const base = 'px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-tighter border ';
+            if (type === 'deadline') return base + 'bg-red-500/10 text-red-500 border-red-500/20';
+            if (type === 'reference') return base + 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20';
+            if (type === 'scheduled') return base + 'bg-blue-500/10 text-blue-500 border-blue-500/20';
+            return 'hidden';
+        }
+
+        async function loadDashboard() {
+            const res = await fetch('/api/dashboard');
+            const groups = await res.json();
+            const container = document.getElementById('dashboard-container');
+            const statsContainer = document.getElementById('stats-bar');
+
+            if (!groups || groups.length === 0) {
+                container.innerHTML = `<div class="glass-card p-20 rounded-[40px] text-center text-slate-500 border-dashed border-2 border-white/5">No active tasks found.</div>`;
+                statsContainer.innerHTML = `
+                    <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
+                        <div class="text-4xl font-black text-white">0</div>
+                        <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Total Tasks</div>
+                    </div>
+                    <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
+                        <div class="text-4xl font-black text-red-500">0</div>
+                        <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">High Priority</div>
+                    </div>
+                    <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
+                        <div class="text-4xl font-black text-green-500">0</div>
+                        <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Scheduled</div>
+                    </div>
+                `;
                 return;
             }
 
-            container.innerHTML = cards.map(card => `
-                <div class="bg-white rounded-3xl shadow-xl border border-slate-100 overflow-hidden mb-8">
-                    <div class="p-6 bg-slate-900 text-white">
-                        <h3 class="text-xl font-bold">${card.subject}</h3>
-                        <p class="text-slate-400 text-sm">From: ${card.sender_email}</p>
+            // Calculate overall stats
+            const totalTasks = groups.reduce((sum, group) => sum + parseInt(group.task_count || 0), 0);
+            const highPriority = groups.reduce((sum, group) => sum + parseInt(group.high_priority_count || 0), 0);
+            const scheduled = groups.reduce((sum, group) => sum + parseInt(group.scheduled_count || 0), 0);
+
+            statsContainer.innerHTML = `
+                <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
+                    <div class="text-4xl font-black text-white">${totalTasks}</div>
+                    <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Total Tasks</div>
+                </div>
+                <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
+                    <div class="text-4xl font-black text-red-500">${highPriority}</div>
+                    <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">High Priority</div>
+                </div>
+                <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
+                    <div class="text-4xl font-black text-green-500">${scheduled}</div>
+                    <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Scheduled</div>
+                </div>
+            `;
+
+            container.innerHTML = groups.map(group => `
+                <div class="glass-card rounded-[40px] overflow-hidden shadow-2xl">
+                    <div class="p-8 border-b border-white/5 flex justify-between items-center">
+                        <div class="flex items-center gap-4">
+                            <div class="bg-white/5 p-3 rounded-2xl border border-white/10"><svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg></div>
+                            <div>
+                                <h3 class="text-xl font-bold">${group.subject}</h3>
+                                <p class="text-slate-500 text-xs font-medium mt-0.5">From: ${group.sender_email}</p>
+                            </div>
+                        </div>
+                        <div class="bg-white/5 px-4 py-2 rounded-full border border-white/10 text-[10px] font-bold uppercase tracking-widest text-orange-400">
+                            ${group.task_count} Tasks
+                        </div>
                     </div>
-                    <div class="p-6 space-y-4">
-                        ${card.tasks.map(task => `
-                            <div class="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100 hover:border-blue-300 transition">
+                    <div class="p-8 space-y-4">
+                        ${group.tasks.map(task => `
+                            <div class="task-row p-6 rounded-[24px] flex items-center gap-6 hover:bg-white/[0.04] transition-all group">
                                 <input type="number" id="order-${task.id}" value="${task.order}" 
-                                       onchange="updateTask(${task.id})"
-                                       class="w-12 h-10 text-center bg-white border-2 border-blue-200 rounded-xl font-bold text-blue-600 outline-none">
-                                <div class="flex-grow font-semibold text-slate-700">${task.action_item}</div>
-                                <select id="priority-${task.id}" onchange="updateTask(${task.id})" 
-                                        class="text-xs font-bold p-2 rounded-lg bg-slate-200 border-none">
+                                       onchange="triggerUpdate(${task.id})"
+                                       class="w-12 h-12 text-center bg-white/5 border border-white/10 rounded-2xl font-black text-blue-400 outline-none focus:border-blue-500">
+                                
+                                <div class="flex-grow">
+                                    <div class="text-lg font-medium text-slate-300 group-hover:text-white transition">${task.action_item}</div>
+                                    <div class="flex flex-wrap gap-2 mt-2 items-center">
+                                        <span class="${getDateBadge(task.date_type)}">${task.date_type || 'none'}</span>
+                                        ${task.suggested_time ? `<span class="text-[9px] text-slate-500 font-bold uppercase py-1">When: ${new Date(task.suggested_time).toLocaleString()}</span>` : ''}
+                                        <span class="text-[9px] font-black uppercase tracking-widest text-slate-500">Confidence: ${task.confidence}</span>
+                                    </div>
+                                </div>
+
+                                <select id="priority-${task.id}" onchange="triggerUpdate(${task.id})" 
+                                        class="text-[10px] font-bold px-4 py-2 rounded-full border border-transparent outline-none cursor-pointer tracking-widest uppercase ${getPriorityColor(task.priority)}">
                                     <option value="High" ${task.priority === 'High' ? 'selected' : ''}>High</option>
                                     <option value="Medium" ${task.priority === 'Medium' ? 'selected' : ''}>Medium</option>
                                     <option value="Low" ${task.priority === 'Low' ? 'selected' : ''}>Low</option>
                                 </select>
+
                                 <button onclick="approveTask(${task.id}, this)" 
-                                        class="px-6 py-2 rounded-xl font-bold text-sm transition ${task.status === 'Scheduled' ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-blue-600 text-white shadow-lg'}">
-                                    ${task.status === 'Scheduled' ? 'Approved ✅' : 'Schedule'}
+                                        class="btn-schedule px-8 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition shadow-xl active:scale-95
+                                        ${task.status === 'Scheduled' ? 'opacity-30 cursor-not-allowed shadow-none' : 'hover:scale-[1.02] shadow-blue-500/20'}">
+                                    ${task.status === 'Scheduled' ? 'Done' : 'Schedule'}
                                 </button>
                             </div>
                         `).join('')}
                     </div>
                 </div>
             `).join('');
-        } catch (err) {
-            console.error("Dashboard failed to load:", err);
         }
-    }
 
-    // New Function to save Owner's Manual Changes
-    async function updateTask(id) {
-    // READ THE LIVE VALUES from the inputs using their IDs
-    const newOrder = document.getElementById(`order-${id}`).value;
-    const newPriority = document.getElementById(`priority-${id}`).value;
-
-    console.log(`Updating Task ${id}: Order ${newOrder}, Priority ${newPriority}`);
-    
-    try {
-        await fetch('/api/tasks/update', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                id: id, 
-                task_order: parseInt(newOrder), 
-                priority: newPriority 
-            })
-        });
-        
-        // Reload to re-sort visually based on new numbers
-        loadDashboard(); 
-    } catch (err) {
-        console.error("Update failed", err);
-    }
-}
-   async function approveTask(id, btn) {
-    btn.innerText = "Booking...";
-    btn.disabled = true; // Prevent double clicking
-
-    try {
-        const res = await fetch('/api/tasks/approve', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id })
-        });
-
-        if (res.ok) {
-            btn.innerText = "Approved ✅";
-            btn.className = "px-6 py-2 rounded-xl font-bold text-sm bg-slate-200 text-slate-400 cursor-not-allowed";
-            // Refresh to update the DB states in the UI
-            setTimeout(loadDashboard, 1000); 
-        } else {
-            const errData = await res.json();
-            alert("Error: " + (errData.error || "Scheduling failed"));
-            btn.innerText = "Schedule";
-            btn.disabled = false;
+        async function triggerUpdate(id) {
+            const order = document.getElementById(`order-${id}`).value;
+            const priority = document.getElementById(`priority-${id}`).value;
+            await fetch('/api/tasks/update', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ id, task_order: parseInt(order), priority })
+            });
+            loadDashboard();
         }
-    } catch (err) {
-        alert("Server connection lost.");
-        btn.innerText = "Schedule";
-        btn.disabled = false;
-    }
-}
 
-    loadDashboard();
-</script>
+        async function approveTask(id, btn) {
+            if (btn.innerText === 'DONE') return;
+            btn.innerText = "...";
+            const res = await fetch('/api/tasks/approve', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ id })
+            });
+            if (res.ok) loadDashboard();
+        }
+
+        loadDashboard();
+        setInterval(loadDashboard, 30000);
+    </script>
 </body>
 </html>

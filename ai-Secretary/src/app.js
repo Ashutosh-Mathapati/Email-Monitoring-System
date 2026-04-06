@@ -25,14 +25,14 @@ app.use("/api/tasks", tasksRouter);
 
 app.get("/api/dashboard", async (req, res) => {
     try {
-        const email = tokenManager.currentEmail;
+        const email = tokenManager.currentEmail; 
         if (!email) {
-            console.warn("Dashboard API called without currentEmail.");
-            return res.status(400).json([]);
+            console.log("[API] No email found in session. Returning empty.");
+            return res.json([]);
         }
-
+        
         const cards = await dbService.getDashboardCards(email);
-        console.log(`[API] Serving ${cards.length} cards to dashboard for ${email}`);
+        console.log(`[API] Serving ${cards.length} cards for ${email}`);
         res.json(cards);
     } catch (err) {
         console.error("Dashboard API Error:", err);
@@ -95,6 +95,25 @@ app.post("/api/tasks/update", async (req, res) => {
     }
 });
 
+app.post("/api/tasks/delete-card", async (req, res) => {
+    const { email_id } = req.body;
+    try {
+        await pool.query("DELETE FROM tasks WHERE email_id = $1", [email_id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete("/api/tasks/delete/:id", async (req, res) => {
+    try {
+        await pool.query("DELETE FROM tasks WHERE id = $1", [req.params.id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).send(err.message);
+    }
+});
+
 // 2. APPROVE ROUTE: Implements Requirement 8 (Dependent Adjustment / Stacking)
 app.post("/api/tasks/approve", async (req, res) => {
     const { id } = req.body;
@@ -103,6 +122,10 @@ app.post("/api/tasks/approve", async (req, res) => {
 
         if (!currentTask) {
             return res.status(404).json({ error: "Task not found" });
+        }
+
+        if (currentTask.date_type === 'reference' || currentTask.date_type === 'deadline') {
+            return res.status(400).json({ error: "Tasks classified as reference or deadline cannot be booked on the calendar." });
         }
 
         const lastTaskRes = await pool.query(
@@ -181,43 +204,118 @@ async function startAgentLoop() {
         try {
             let emails = await emailService.fetchNewEmails();
 
-            // FORCE CHECK: If Delta gave us nothing, let's look for existing messages manually once
+            // 1. FALLBACK: Fetch history if delta is empty
             if (emails.length === 0) {
+                console.log("[SYNC] Delta empty. Checking recent history...");
                 const token = await tokenManager.getAccessToken();
-                const historyRes = await axios.get("https://graph.microsoft.com/v1.0/me/messages?$top=10", {
+                const historyRes = await axios.get("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$top=20", {
                     headers: { Authorization: `Bearer ${token}` }
                 });
                 emails = historyRes.data.value;
             }
 
-            // 1. Get the tracking date you set in Signup
-            const userRes = await pool.query("SELECT tracking_start_date FROM users WHERE email = $1", [tokenManager.currentEmail]);
+            // 2. GET THE USER'S TRACKING TIME FROM DATABASE
+            const userRes = await pool.query("SELECT tracking_start_date FROM users WHERE email = $1", [tokenManager.currentEmail.toLowerCase()]);
             if (!userRes.rows[0]) return;
+
+            // Convert the DB date to a real JavaScript Date object
             const trackingStartDate = new Date(userRes.rows[0].tracking_start_date);
 
             for (const email of emails) {
-                const emailTime = new Date(email.receivedDateTime);
+                const emailReceivedTime = new Date(email.receivedDateTime);
 
-                // GATE 1: Ignore emails older than your tracking time (e.g., ignore before 1:30 AM)
-                if (emailTime < trackingStartDate) continue;
+                // --- THE TRIPLE GATE ---
 
-                // GATE 2: Duplicate check
-                if (await dbService.isEmailProcessed(email.id)) continue;
+                // GATE 1: TIME FILTER
+                // If the email arrived BEFORE your tracking cutoff, ignore it.
+                if (emailReceivedTime < trackingStartDate) {
+                    continue;
+                }
 
-                console.log(`\n[NEW EMAIL] Analyzed: ${email.subject}`);
+                // GATE 2: DUPLICATE CHECK
+                if (await dbService.isEmailProcessed(email.id)) {
+                    continue;
+                }
+
+                // ONLY IF IT PASSES BOTH GATES:
+                console.log(`\n[AI START] Analyzing: "${email.subject}"`);
                 const aiResponse = await aiService.analyzeEmail(email.subject, email.bodyPreview);
-                
-                if (aiResponse?.tasks) {
-                    for (const t of aiResponse.tasks) {
-                        // PASS the email.receivedDateTime to the DB
-                        await dbService.saveTask(email.id, email.subject, aiResponse.overall_summary, t, email.from.emailAddress.address, email.receivedDateTime);
+                const rawTasks = Array.isArray(aiResponse) ? aiResponse : aiResponse?.tasks;
+                const overallSummary = aiResponse?.overall_summary || "Executive Action Required";
+
+                if (rawTasks && Array.isArray(rawTasks)) {
+                    const badTitles = ["research", "update", "finalize", "schedule", "survey"];
+                    const finalTasks = [];
+
+                    rawTasks.forEach(task => {
+                        const titleText = (task.title || task.action_item || "").toString().trim();
+                        const titleWords = titleText.split(" ").filter(Boolean);
+                        let validatedTitle = titleText;
+
+                        if (titleWords.length < 2 || badTitles.includes(titleText.toLowerCase())) {
+                            console.warn(`[VALIDATOR] Generic task rejected: ${titleText}`);
+                            const descriptionText = (task.description || "").toString().trim();
+                            const fallback = descriptionText ? `${titleText} - ${descriptionText.substring(0, 30)}` : `${titleText} task`;
+                            validatedTitle = fallback;
+                        }
+
+                        if (validatedTitle.toLowerCase().includes(" and ")) {
+                            console.log(`[VALIDATOR] Split needed for: ${validatedTitle}`);
+                        }
+
+                        finalTasks.push({
+                            ...task,
+                            title: validatedTitle,
+                            action_item: validatedTitle,
+                            date_type: task.date_type || "none",
+                            suggested_time: task.suggested_time || null,
+                            priority: task.priority || "Medium"
+                        });
+                    });
+
+                    let limitedTasks = finalTasks;
+                    if (limitedTasks.length > 5) {
+                        limitedTasks = limitedTasks.slice(0, 5);
                     }
+
+                    for (const t of limitedTasks) {
+                        let finalSuggestedTime = t.suggested_time || null;
+                        if (t.date_type === "reference" || t.date_type === "deadline") {
+                            console.log(`[VALIDATOR] Preventing scheduling for ${t.date_type} task: ${t.title}`);
+                            finalSuggestedTime = null;
+                        }
+
+                        const taskData = {
+                            action_item: t.title || t.action_item || t.description || "Untitled task",
+                            priority: t.priority || "Medium",
+                            confidence: t.confidence || "HIGH",
+                            duration: t.duration || 30,
+                            date_type: t.date_type,
+                            suggested_time: finalSuggestedTime
+                        };
+
+                        try {
+                            await dbService.saveTask(
+                                email.id,
+                                email.subject,
+                                overallSummary,
+                                taskData,
+                                email.from.emailAddress.address,
+                                email.receivedDateTime
+                            );
+                            console.log(`[QUEUED] ${taskData.action_item}`);
+                        } catch (dbErr) {
+                            console.error("[DB ERROR] Failed to save task:", dbErr.message);
+                        }
+                    }
+
+                    console.log(`[QUEUED] ${limitedTasks.length} context-rich tasks processed.`);
                 }
             }
         } catch (err) {
             console.error("Loop Error:", err.message);
         }
-    }, 20000); // Checks every 20 seconds
+    }, 30000); // 30 seconds is plenty
 
     setInterval(processTaskCompletions, 60000); // Checks every 1 minute for finished scheduled tasks
 }
@@ -227,15 +325,16 @@ async function processTaskCompletions() {
 
     try {
         const finishedTasks = await dbService.getFinishedTasks();
+        console.log(`[STATUS CHECK] Found ${finishedTasks.length} tasks ready for notification.`);
 
         for (const task of finishedTasks) {
-            console.log(`[COMPLETING] Task "${task.action_item}" is finished. Sending notification to ${task.sender_email}...`);
+            console.log(`[NOTIFYING] Attempting to email ${task.sender_email} for task: ${task.action_item}`);
 
             const isSent = await notificationService.sendCompletionEmail(task.sender_email, task.action_item);
 
             if (isSent) {
                 await dbService.markTaskAsCompleted(task.id);
-                console.log(`[DONE] Task ID ${task.id} moved to Completed status.`);
+                console.log(`[DONE] Task ID ${task.id} finalized.`);
             }
         }
     } catch (err) {
@@ -243,6 +342,16 @@ async function processTaskCompletions() {
     }
 }
 
-app.listen(PORT, () => {
-    console.log(`Server listening on http://localhost:${PORT}`);
-});
+async function initServer() {
+    try {
+        await dbService.ensureSchema();
+    } catch (err) {
+        console.error("[SCHEMA] Initialization failed:", err.message);
+    }
+
+    app.listen(PORT, () => {
+        console.log(`Server listening on http://localhost:${PORT}`);
+    });
+}
+
+initServer();

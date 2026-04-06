@@ -15,6 +15,10 @@ CREATE TABLE tasks (
     start_time TIMESTAMP,
     end_time TIMESTAMP,
     outlook_event_id TEXT,
+    date_type TEXT,
+    suggested_time TIMESTAMP,
+    confidence TEXT,
+    task_order INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

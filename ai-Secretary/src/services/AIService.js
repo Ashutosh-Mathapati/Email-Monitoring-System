@@ -14,32 +14,49 @@ class AIService {
                 messages: [
                     {
                         role: "system",
-                        content: `You are a world-class Executive Assistant. Current Date/Time: ${now}.
-                        Analyze the email and extract EVERY distinct actionable request as a SEPARATE task.
-                        
-                        RULES:
-                        1. If an email has bullet points or multiple requests, extract EACH one.
-                        2. Never combine tasks like "Invite people" and "Prepare agenda" into one row.
-                        3. For 'suggested_time', use the specific date/time mentioned in the text.
-                        4. Return ONLY JSON.
-                        
-                        Format:
+                        content: `You are a precision task extraction engine with intent analysis.
+                    Current Date: ${now}.
+
+                    STRICT RULES:
+                    1. EXTRACT EXACTLY 4-5 ATOMIC TASKS.
+                    2. DATE TYPE CLASSIFICATION:
+                       - 'deadline': If date follows "by", "due", "deadline".
+                       - 'reference': If date is for "availability", "options", "range".
+                       - 'scheduled': If date is for "meeting", "call", "appointment".
+                       - 'none': If no specific date mentioned.
+                    3. NEVER assign a 'scheduled_date' if the type is 'reference' or 'deadline'.
+                    
+                    OUTPUT FORMAT (JSON):
+                    {
+                      "overall_summary": "Context",
+                      "tasks": [
                         {
-                          "overall_summary": "A brief title for this group of tasks",
-                          "tasks": [
-                            { "action_item": "Task 1 description", "priority": "High", "duration": 120, "suggested_time": "ISO_TIMESTAMP" },
-                            { "action_item": "Task 2 description", "priority": "Medium", "duration": 15, "suggested_time": null }
-                          ]
-                        }`
+                          "title": "Verb-first context-rich title",
+                          "description": "Verbatim detail",
+                          "date_type": "deadline | reference | scheduled | none",
+                          "suggested_time": "ISO_TIMESTAMP or null",
+                          "priority": "High/Medium/Low"
+                        }
+                      ]
+                    }`
                     },
-                    { role: "user", content: `Subject: ${subject}\n\nBody: ${body}` }
+                    {
+                        role: "user",
+                        content: `Subject: ${subject}\n\nBody: ${body}`
+                    }
                 ],
                 model: "llama-3.3-70b-versatile",
+                temperature: 0,
                 response_format: { type: "json_object" }
             });
-            return JSON.parse(chatCompletion.choices[0].message.content);
-        } catch (err) { return null; }
-    }
+
+            const res = JSON.parse(chatCompletion.choices[0].message.content);
+            return res;
+        } catch (err) {
+            console.error("AI Parser Error:", err);
+            return null;
         }
+    }
+}
 
 module.exports = new AIService();
