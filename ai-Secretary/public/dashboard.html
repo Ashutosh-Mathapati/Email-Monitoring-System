@@ -17,7 +17,30 @@
         </div>
     </div>
 
+    <!-- Reschedule Modal -->
+    <div id="rescheduleModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-2xl shadow-lg p-6 max-w-md w-full mx-4">
+            <h2 class="text-2xl font-bold text-slate-900 mb-4">Reschedule Task</h2>
+            <div class="mb-4">
+                <p id="rescheduleTaskName" class="text-sm text-slate-600 mb-4 italic"></p>
+                <label class="block text-sm font-semibold text-slate-700 mb-2">New Date & Time</label>
+                <input type="datetime-local" id="rescheduleDateTime" class="w-full border-2 border-slate-300 rounded-lg p-3 focus:border-blue-500 focus:outline-none">
+                <p class="text-xs text-slate-500 mt-2">Format will be converted to IST</p>
+            </div>
+            <div class="flex gap-3">
+                <button onclick="closeRescheduleModal()" class="flex-1 bg-slate-300 hover:bg-slate-400 text-slate-900 px-4 py-2 rounded-lg font-semibold transition">
+                    Cancel
+                </button>
+                <button onclick="confirmReschedule()" class="flex-1 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold transition">
+                    Reschedule
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script>
+        let currentRescheduleTaskId = null;
+
         async function approve(id) {
             const res = await fetch("/api/tasks/approve", {
                 method: "POST",
@@ -32,6 +55,66 @@
 
             loadDashboard();
         }
+
+        function openRescheduleModal(taskId, taskName, currentTime) {
+            currentRescheduleTaskId = taskId;
+            document.getElementById("rescheduleTaskName").textContent = `Task: ${taskName}`;
+            
+            // Convert ISO time to datetime-local format if it exists
+            if (currentTime) {
+                const date = new Date(currentTime);
+                const dateString = date.toISOString().slice(0, 16);
+                document.getElementById("rescheduleDateTime").value = dateString;
+            }
+            
+            document.getElementById("rescheduleModal").classList.remove("hidden");
+        }
+
+        function closeRescheduleModal() {
+            currentRescheduleTaskId = null;
+            document.getElementById("rescheduleModal").classList.add("hidden");
+        }
+
+        async function confirmReschedule() {
+            if (!currentRescheduleTaskId) return;
+            
+            const dateTimeInput = document.getElementById("rescheduleDateTime").value;
+            if (!dateTimeInput) {
+                alert("Please select a date and time");
+                return;
+            }
+
+            // Convert datetime-local to ISO 8601 format (YYYY-MM-DDTHH:mm:ss)
+            const newTime = dateTimeInput.replace("T", "T") + ":00";
+
+            try {
+                const res = await fetch(`/api/tasks/reschedule/${currentRescheduleTaskId}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ newTime })
+                });
+
+                const data = await res.json();
+
+                if (!res.ok) {
+                    alert(`Error: ${data.error || "Failed to reschedule"}`);
+                    return;
+                }
+
+                alert(`Success! ${data.message}`);
+                closeRescheduleModal();
+                loadDashboard();
+            } catch (err) {
+                alert("Error rescheduling task: " + err.message);
+            }
+        }
+
+        // Close modal when clicking outside
+        document.getElementById("rescheduleModal").addEventListener("click", (e) => {
+            if (e.target.id === "rescheduleModal") {
+                closeRescheduleModal();
+            }
+        });
 
         async function loadDashboard() {
             const res = await fetch("/api/dashboard");
@@ -59,16 +142,26 @@
                         </span>
                     </div>
                     <div class="p-5">
-                        <p class="text-blue-600 font-semibold mb-4 italic">"${card.summary || card.tasks?.[0]?.summary || "No summary available."}"</p>
-                        <div class="space-y-3">
+                        <div class="space-y-4">
                             ${(card.tasks || []).map((task, index) => `
-                                <div class="flex items-center gap-4 p-3 bg-slate-50 rounded-xl border border-slate-100">
-                                    <input type="number" value="${index + 1}" class="w-12 text-center border-2 border-blue-200 rounded-lg font-bold text-blue-600" readonly>
-                                    <div class="flex-grow font-medium text-slate-700">${task.action_item}</div>
-                                    <span class="text-xs font-bold ${task.priority === "High" ? "text-red-500" : task.priority === "Medium" ? "text-orange-500" : "text-slate-500"}">${task.priority || "Low"}</span>
-                                    <button onclick="approve(${task.id})" class="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-1 rounded-lg text-sm font-bold transition">
-                                        Approve
-                                    </button>
+                                <div class="border border-slate-200 rounded-xl p-4 bg-slate-50 hover:bg-slate-100 transition">
+                                    <div class="flex items-start gap-3 mb-3">
+                                        <span class="text-xs font-bold px-2 py-1 bg-blue-200 text-blue-700 rounded-full">#${index + 1}</span>
+                                        <div class="flex-grow">
+                                            <h4 class="font-semibold text-slate-800">${task.action_item}</h4>
+                                            ${task.description ? `<p class="text-sm text-slate-600 mt-1 italic">${task.description}</p>` : ''}
+                                        </div>
+                                        <span class="text-xs font-bold ${task.priority === "High" ? "text-red-500" : task.priority === "Medium" ? "text-orange-500" : "text-slate-500"}">${task.priority || "Low"}</span>
+                                    </div>
+                                    ${task.suggested_time ? `<p class="text-xs text-slate-500 mb-3">Suggested time: ${new Date(task.suggested_time).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</p>` : ''}
+                                    <div class="flex gap-2">
+                                        <button onclick="approve(${task.id})" class="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-2 rounded-lg text-sm font-semibold transition">
+                                            Approve
+                                        </button>
+                                        <button onclick="openRescheduleModal(${task.id}, '${task.action_item.replace(/'/g, "\\'")}', '${task.suggested_time || ''}')" class="flex-1 bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg text-sm font-semibold transition">
+                                            Reschedule
+                                        </button>
+                                    </div>
                                 </div>
                             `).join("")}
                         </div>
@@ -78,6 +171,8 @@
         }
 
         loadDashboard();
+        // Refresh dashboard every 30 seconds
+        setInterval(loadDashboard, 30000);
     </script>
 </body>
 </html>

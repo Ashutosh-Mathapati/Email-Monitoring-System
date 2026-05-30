@@ -15,6 +15,11 @@ CREATE TABLE tasks (
     start_time TIMESTAMP,
     end_time TIMESTAMP,
     outlook_event_id TEXT,
+    suggested_time TIMESTAMP,  -- AI-extracted date/time from email
+    confidence TEXT DEFAULT 'HIGH',  -- AI confidence level
+    received_at TIMESTAMP,  -- When the email was received
+    task_description TEXT,  -- Brief summary of the specific task
+    task_order INTEGER DEFAULT 0,  -- Order among tasks in the email
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -46,7 +51,19 @@ ALTER TABLE tasks ADD UNIQUE (email_id, action_item);
 -- 1. Create a unique constraint on the combination of Email ID and the Action Item
 ALTER TABLE tasks ADD CONSTRAINT unique_task_per_email UNIQUE (email_id, action_item);
 
+-- Add task_description column if it doesn't exist
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS task_description TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS task_order INTEGER DEFAULT 0;
+
 CREATE TABLE settings (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS processed_emails (
+    email_id TEXT PRIMARY KEY,
+    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS intent TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS participants JSONB DEFAULT '[]'::jsonb;

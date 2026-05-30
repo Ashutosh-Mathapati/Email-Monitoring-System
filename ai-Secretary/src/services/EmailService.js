@@ -42,37 +42,19 @@ class EmailService {
     async fetchNewEmails() {
         try {
             const token = await tokenManager.getAccessToken();
-            // 1. Try to get the saved bookmark from Supabase
-            const savedLink = await pool.query("SELECT value FROM settings WHERE key = 'last_delta_link'");
-            let deltaLink = savedLink.rows[0]?.value || null;
 
-            // 2. Build the URL (me/messages/delta is often more stable than the inbox-specific one)
-            let url = deltaLink || "https://graph.microsoft.com/v1.0/me/messages/delta?$select=subject,from,bodyPreview,receivedDateTime";
+            // REMOVED $select from delta URL. This is the most stable version for personal accounts.
+            let url = this.deltaLink || "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta";
 
-            const response = await axios.get(url, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-
-            // 3. Save the NEW bookmark back to Supabase
-            const newDelta = response.data["@odata.deltaLink"] || response.data["@odata.nextLink"];
-            if (newDelta) {
-                await pool.query(
-                    "INSERT INTO settings (key, value) VALUES ('last_delta_link', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
-                    [newDelta]
-                );
-            }
+            const response = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+            this.deltaLink = response.data["@odata.deltaLink"] || response.data["@odata.nextLink"];
 
             return response.data.value.filter(msg => msg["@removed"] === undefined);
 
         } catch (err) {
-            // --- THE 404 FIX ---
-            if (err.response && err.response.status === 404) {
-                console.warn("[SYNC] Delta token expired or invalid. Resetting sync state...");
+            if (err.response?.status === 400 || err.response?.status === 404) {
                 await pool.query("DELETE FROM settings WHERE key = 'last_delta_link'");
-                return []; // It will start fresh on the next interval
             }
-            
-            console.error("Email Fetch Error:", err.message);
             return [];
         }
     }

@@ -25,14 +25,14 @@ app.use("/api/tasks", tasksRouter);
 
 app.get("/api/dashboard", async (req, res) => {
     try {
-        const email = tokenManager.currentEmail;
+        const email = tokenManager.currentEmail; 
         if (!email) {
-            console.warn("Dashboard API called without currentEmail.");
-            return res.status(400).json([]);
+            console.log("[API] No email found in session. Returning empty.");
+            return res.json([]);
         }
-
+        
         const cards = await dbService.getDashboardCards(email);
-        console.log(`[API] Serving ${cards.length} cards to dashboard for ${email}`);
+        console.log(`[API] Serving ${cards.length} cards for ${email}`);
         res.json(cards);
     } catch (err) {
         console.error("Dashboard API Error:", err);
@@ -89,6 +89,25 @@ app.post("/api/tasks/update", async (req, res) => {
     const { id, task_order, priority } = req.body;
     try {
         await dbService.updateTaskData(id, task_order, priority);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).send(err.message);
+    }
+});
+
+app.post("/api/tasks/delete-card", async (req, res) => {
+    const { email_id } = req.body;
+    try {
+        await pool.query("DELETE FROM tasks WHERE email_id = $1", [email_id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete("/api/tasks/delete/:id", async (req, res) => {
+    try {
+        await pool.query("DELETE FROM tasks WHERE id = $1", [req.params.id]);
         res.json({ success: true });
     } catch (err) {
         res.status(500).send(err.message);
@@ -181,43 +200,124 @@ async function startAgentLoop() {
         try {
             let emails = await emailService.fetchNewEmails();
 
-            // FORCE CHECK: If Delta gave us nothing, let's look for existing messages manually once
+            // 1. FALLBACK: Fetch history if delta is empty
             if (emails.length === 0) {
+                console.log("[SYNC] Delta empty. Checking recent history...");
                 const token = await tokenManager.getAccessToken();
-                const historyRes = await axios.get("https://graph.microsoft.com/v1.0/me/messages?$top=10", {
+                const historyRes = await axios.get("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$top=20", {
                     headers: { Authorization: `Bearer ${token}` }
                 });
                 emails = historyRes.data.value;
             }
 
-            // 1. Get the tracking date you set in Signup
-            const userRes = await pool.query("SELECT tracking_start_date FROM users WHERE email = $1", [tokenManager.currentEmail]);
+            // 2. GET THE USER'S TRACKING TIME FROM DATABASE
+            const userRes = await pool.query("SELECT tracking_start_date FROM users WHERE email = $1", [tokenManager.currentEmail.toLowerCase()]);
             if (!userRes.rows[0]) return;
+
+            // Convert the DB date to a real JavaScript Date object
             const trackingStartDate = new Date(userRes.rows[0].tracking_start_date);
 
             for (const email of emails) {
-                const emailTime = new Date(email.receivedDateTime);
+                const emailReceivedTime = new Date(email.receivedDateTime);
 
-                // GATE 1: Ignore emails older than your tracking time (e.g., ignore before 1:30 AM)
-                if (emailTime < trackingStartDate) continue;
+                // --- THE TRIPLE GATE ---
 
-                // GATE 2: Duplicate check
-                if (await dbService.isEmailProcessed(email.id)) continue;
+                // GATE 1: TIME FILTER
+                // If the email arrived BEFORE your tracking cutoff, ignore it.
+                if (emailReceivedTime < trackingStartDate) {
+                    continue;
+                }
 
-                console.log(`\n[NEW EMAIL] Analyzed: ${email.subject}`);
-                const aiResponse = await aiService.analyzeEmail(email.subject, email.bodyPreview);
+                // GATE 2: DUPLICATE CHECK
+                if (await dbService.isEmailProcessed(email.id)) {
+                    continue;
+                }
+
+                // ONLY IF IT PASSES BOTH GATES:
+                console.log(`\n[AI START] Analyzing: "${email.subject}"`);
+                const fromEmail = email.from?.emailAddress?.address || null;
+                const aiResponse = await aiService.analyzeEmail(email.subject, email.bodyPreview, fromEmail);
                 
-                if (aiResponse?.tasks) {
-                    for (const t of aiResponse.tasks) {
-                        // PASS the email.receivedDateTime to the DB
-                        await dbService.saveTask(email.id, email.subject, aiResponse.overall_summary, t, email.from.emailAddress.address, email.receivedDateTime);
+                // REQUIREMENT 1.5: No action if no meeting intent is detected.
+                if (!aiResponse || aiResponse.action_required === false) {
+                    console.log(`[IGNORE] No meeting intent detected in: "${email.subject}"`);
+                    await dbService.markEmailAsSeen(email.id);
+                    continue;
+                }
+
+                const rawTasks = Array.isArray(aiResponse.tasks) ? aiResponse.tasks : [];
+
+                if (rawTasks.length > 0) {
+                    const badTitles = ["research", "update", "finalize", "schedule", "survey"];
+                    const finalTasks = [];
+
+                    rawTasks.forEach(task => {
+                        const titleText = (task.title || task.action_item || "").toString().trim();
+                        const titleWords = titleText.split(" ").filter(Boolean);
+                        let validatedTitle = titleText;
+
+                        if (titleWords.length < 2 || badTitles.includes(titleText.toLowerCase())) {
+                            console.warn(`[VALIDATOR] Generic task rejected: ${titleText}`);
+                            const descriptionText = (task.description || "").toString().trim();
+                            const fallback = descriptionText ? `${titleText} - ${descriptionText.substring(0, 30)}` : `${titleText} task`;
+                            validatedTitle = fallback;
+                        }
+
+                        if (validatedTitle.toLowerCase().includes(" and ")) {
+                            console.log(`[VALIDATOR] Split needed for: ${validatedTitle}`);
+                        }
+
+                        finalTasks.push({
+                            ...task,
+                            title: validatedTitle,
+                            action_item: validatedTitle
+                        });
+                    });
+
+                    let limitedTasks = finalTasks;
+                    if (limitedTasks.length > 5) {
+                        limitedTasks = limitedTasks.slice(0, 5);
                     }
+
+                    for (const [taskIndex, t] of limitedTasks.entries()) {
+                        const taskData = {
+                            action_item: t.title || t.action_item || t.description || "Untitled task",
+                            intent: t.intent || "schedule",
+                            participants: Array.isArray(t.participants) ? t.participants : [],
+                            priority: t.priority || "Medium",
+                            confidence: t.confidence || "HIGH",
+                            duration: t.duration || 30,
+                            description: t.description || '', // Task-specific summary
+                            suggested_time: t.suggested_time || null  // Include AI-extracted date/time
+                        };
+
+                        try {
+                            await dbService.saveTask(
+                                email.id,
+                                email.subject,
+                                aiResponse.overall_summary || "Executive Action Required",
+                                taskData,
+                                fromEmail,
+                                email.receivedDateTime,
+                                taskIndex
+                            );
+                            console.log(`[QUEUED] ${taskData.action_item}`);
+                        } catch (dbErr) {
+                            console.error("[DB ERROR] Failed to save task:", dbErr.message);
+                        }
+                    }
+
+                    console.log(`[QUEUED] ${limitedTasks.length} context-rich tasks processed.`);
+                    await dbService.markEmailAsSeen(email.id);
+                } else {
+                    console.log(`[IGNORE] AI returned action_required but no meeting tasks for: "${email.subject}"`);
+                    await dbService.markEmailAsSeen(email.id);
                 }
             }
         } catch (err) {
             console.error("Loop Error:", err.message);
         }
-    }, 20000); // Checks every 20 seconds
+    }, 30000); // 30 seconds is plenty
 
     setInterval(processTaskCompletions, 60000); // Checks every 1 minute for finished scheduled tasks
 }
