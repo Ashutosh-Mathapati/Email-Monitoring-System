@@ -7,7 +7,7 @@ node_modules/
 # ⚙️ VS Code settings (optional)
 .vscode/
 # 🗄️ Database (optional - keep if sensitive)
- *.db
+*.db
 
 # 🔑 Tokens / secrets
 tokens.json

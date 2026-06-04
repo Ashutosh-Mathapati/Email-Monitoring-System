@@ -18,6 +18,16 @@ class StorageService {
         const tokens = JSON.parse(fs.readFileSync(TOKEN_FILE, "utf8"));
         return tokens[email.toLowerCase()] || null;
     }
+
+    removeToken(email) {
+        if (!fs.existsSync(TOKEN_FILE)) return false;
+        const tokens = JSON.parse(fs.readFileSync(TOKEN_FILE, "utf8"));
+        const key = email.toLowerCase();
+        const existed = Boolean(tokens[key]);
+        delete tokens[key];
+        fs.writeFileSync(TOKEN_FILE, JSON.stringify(tokens, null, 2));
+        return existed;
+    }
 }
 
 module.exports = new StorageService();

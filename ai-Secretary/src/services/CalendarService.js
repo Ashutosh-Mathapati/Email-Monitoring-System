@@ -1,27 +1,95 @@
 const axios = require("axios");
 const tokenManager = require("../TokenManager");
 const dbService = require("./DbService");
+const aiService = require("./AIService");
+const emailService = require("./EmailService");
 
 class CalendarService {
+    isMailboxCalendarUnavailable(err) {
+        const code = err.response?.data?.error?.code;
+        return code === "MailboxNotEnabledForRESTAPI";
+    }
+
+    correctRelativeSuggestedTime(aiData) {
+        if (!aiData.suggested_time || aiData.suggested_time instanceof Date) {
+            return aiData.suggested_time;
+        }
+
+        const sourceText = [
+            aiData.action_item,
+            aiData.task_description,
+            aiData.description
+        ].filter(Boolean).join(" ");
+        const intent = (aiData.intent || "").toLowerCase();
+        const hasDateReference = /\b(next|this|coming|today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december|eod|end of day)\b/i.test(sourceText);
+
+        if (intent !== "schedule" && !/^\s*(schedule|set up|arrange|book)\b/i.test(aiData.action_item || "") && !hasDateReference) {
+            console.log(`[SCHEDULER TIME FIX] Ignoring unsupported suggested_time for non-scheduling task "${aiData.action_item}".`);
+            return null;
+        }
+
+        if (!/\b(next|this|coming|today|tomorrow)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(sourceText)) {
+            return aiData.suggested_time;
+        }
+
+        const corrected = aiService.parseSuggestedTime(sourceText, aiService.getReferenceDate(aiData.received_at));
+        if (corrected && corrected !== aiData.suggested_time) {
+            console.log(`[SCHEDULER TIME FIX] Corrected stale suggested_time from ${aiData.suggested_time} to ${corrected}`);
+            return corrected;
+        }
+
+        return aiData.suggested_time;
+    }
+
+    async hydrateScheduleTaskFromEmail(aiData) {
+        const intent = (aiData.intent || "").toLowerCase();
+        if (!aiData.email_id || (intent !== "schedule" && !/^\s*(schedule|set up|arrange|book)\b/i.test(aiData.action_item || ""))) {
+            return aiData;
+        }
+
+        const body = await emailService.fetchMessageBody(aiData.email_id);
+        if (!body) return aiData;
+
+        const extractedTasks = aiService.extractDeterministicTasks(aiData.subject, body, aiData.sender_email, aiData.received_at);
+        const scheduleTask = extractedTasks.find(task => task.intent === "schedule" || /schedule|meeting/i.test(task.action_item || ""));
+        if (!scheduleTask) return aiData;
+
+        if (scheduleTask.suggested_time && scheduleTask.suggested_time !== aiData.suggested_time) {
+            console.log(`[SCHEDULER EMAIL FIX] Rebuilt schedule task from original email: ${scheduleTask.action_item} at ${scheduleTask.suggested_time}`);
+        }
+
+        return {
+            ...aiData,
+            action_item: scheduleTask.action_item || aiData.action_item,
+            priority: scheduleTask.priority || aiData.priority,
+            suggested_time: scheduleTask.suggested_time || aiData.suggested_time,
+            duration: scheduleTask.duration || aiData.duration,
+            duration_minutes: scheduleTask.duration || aiData.duration_minutes,
+            task_description: scheduleTask.description || aiData.task_description
+        };
+    }
+
     // 1. THE MAIN FUNCTION CALLED BY APP.JS
     async scheduleTask(aiData) {
         try {
             const token = await tokenManager.getAccessToken();
+            aiData = await this.hydrateScheduleTaskFromEmail(aiData);
             
             // Normalize duration from AI data or database row
             const durationMinutes = aiData.duration ?? aiData.duration_minutes ?? 30;
 
             // Determine requested start (use AI-extracted time or default to now)
             let requestedStart;
-            if (aiData.suggested_time) {
+            const suggestedTime = this.correctRelativeSuggestedTime(aiData);
+            if (suggestedTime) {
                 // Parse the ISO time as IST (no conversion, keep as IST)
                 try {
-                    requestedStart = this.parseIST(aiData.suggested_time);
+                    requestedStart = this.parseIST(suggestedTime);
                     if (!requestedStart || isNaN(requestedStart.getTime())) {
                         throw new Error("Invalid date after parsing");
                     }
                     const istDisplay = requestedStart.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-                    console.log(`[AI-EXTRACTED TIME] ${aiData.suggested_time} IST (keeping as IST, no conversion)`);
+                    console.log(`[AI-EXTRACTED TIME] ${suggestedTime} IST (keeping as IST, no conversion)`);
                     console.log(`[DISPLAY] Calendar will show: ${istDisplay} IST`);
                 } catch (parseErr) {
                     console.warn(`[PARSE ERROR] Could not parse suggested_time: ${parseErr.message}, using current time`);
@@ -34,63 +102,90 @@ class CalendarService {
             }
             
             // Ensure we are working with the correct year (2026)
-            if (requestedStart.getFullYear() < 2026) {
-                console.log(`[YEAR CORRECTION] Year was ${requestedStart.getFullYear()}, setting to 2026`);
-                requestedStart.setFullYear(2026);
+            const requestedParts = this.getISTParts(requestedStart);
+            if (requestedParts.year !== 2026) {
+                console.log(`[YEAR CORRECTION] Year was ${requestedParts.year}, setting to 2026`);
+                
+                const pad = n => String(n).padStart(2, "0");
+                const correctedISTStr = `2026-${pad(requestedParts.month)}-${pad(requestedParts.day)}T${pad(requestedParts.hour)}:${pad(requestedParts.minute)}:${pad(requestedParts.second)}`;
+                requestedStart = this.parseIST(correctedISTStr);
             }
 
-            console.log(`[CHECKING] Looking for conflicts at ${requestedStart.toLocaleString()}...`);
+            console.log(`[CHECKING] Looking for conflicts at ${this.formatIST(requestedStart)} IST...`);
 
             // 2. RUN PRIORITY-AWARE CONFLICT DETECTION
             const scheduleDecision = await this.findPriorityAwareSlot(requestedStart, durationMinutes, aiData);
             const finalStartTime = scheduleDecision.start;
             
             if (finalStartTime.getTime() !== requestedStart.getTime()) {
-                console.log(`[RESCHEDULED] Conflict found! Moving from ${requestedStart.toLocaleString()} to: ${finalStartTime.toLocaleString()}`);
+                console.log(`[RESCHEDULED] Conflict found! Moving from ${this.formatIST(requestedStart)} IST to: ${this.formatIST(finalStartTime)} IST`);
             } else {
-                console.log(`[CONFIRMED] No conflicts. Scheduling at: ${finalStartTime.toLocaleString()}`);
+                console.log(`[CONFIRMED] No conflicts. Scheduling at: ${this.formatIST(finalStartTime)} IST`);
             }
 
             scheduleDecision.reasoning.forEach(line => console.log(`[PRIORITY DECISION] ${line}`));
 
             const endTime = new Date(finalStartTime.getTime() + durationMinutes * 60000);
+            const participantList = (Array.isArray(aiData.participants) ? aiData.participants : [])
+                .map(participant => String(participant).trim())
+                .filter(Boolean);
+            const validAttendees = participantList
+                .filter(participant => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(participant))
+                .map(address => ({
+                    emailAddress: { address },
+                    type: "required"
+                }));
 
             // 3. THE ACTUAL API CALL - USING IST TIMEZONE
             const eventPayload = {
-                subject: `📅 AI AGENT: ${aiData.action_item}`,
+                subject: `AI AGENT: ${aiData.action_item}`,
                 body: {
                     contentType: "HTML",
-                    content: `<b>Summary:</b> ${aiData.summary}<br/><i>Scheduled by AI Secretary.</i>`
+                    content: `<b>Summary:</b> ${aiData.summary || aiData.task_description || aiData.action_item}<br/>${participantList.length ? `<b>Participants mentioned:</b> ${participantList.join(", ")}<br/>` : ""}<i>Scheduled by AI Secretary.</i>`
                 },
                 start: {
-                    dateTime: finalStartTime.toISOString(),
+                    dateTime: this.getISTLocalString(finalStartTime),
                     timeZone: "India Standard Time"
                 },
                 end: {
-                    dateTime: endTime.toISOString(),
+                    dateTime: this.getISTLocalString(endTime),
                     timeZone: "India Standard Time"
                 },
                 location: { displayName: "AI Office" }
             };
+            if (validAttendees.length > 0) {
+                eventPayload.attendees = validAttendees;
+            }
 
-            const response = await axios.post(
-                "https://graph.microsoft.com/v1.0/me/events",
-                eventPayload,
-                {
-                    headers: {
-                        Authorization: `Bearer ${token}`,
-                        "Content-Type": "application/json",
-                        "Prefer": 'outlook.timezone="India Standard Time"'
+            let eventId = null;
+            try {
+                const response = await axios.post(
+                    "https://graph.microsoft.com/v1.0/me/events",
+                    eventPayload,
+                    {
+                        headers: {
+                            Authorization: `Bearer ${token}`,
+                            "Content-Type": "application/json",
+                            "Prefer": 'outlook.timezone="India Standard Time"'
+                        }
                     }
-                }
-            );
+                );
 
-            // 4. LOG SUCCESS WITH EVENT ID
-            console.log(`[SUCCESS] Event created in Outlook! ID: ${response.data.id.substring(0, 10)}...`);
+                eventId = response.data.id;
+                console.log(`[SUCCESS] Event created in Outlook! ID: ${eventId.substring(0, 10)}...`);
+            } catch (err) {
+                if (!this.isMailboxCalendarUnavailable(err)) {
+                    throw err;
+                }
+
+                eventId = `local-${Date.now()}`;
+                console.warn("[CALENDAR FALLBACK] Microsoft Graph Calendar is not available for this mailbox. Saved schedule locally only.");
+            }
+
             console.log(`[CALENDAR] Event scheduled: "${aiData.action_item}" on ${finalStartTime.toDateString()} at ${finalStartTime.toLocaleTimeString()}`);
             
             return {
-                eventId: response.data.id,
+                eventId,
                 start: finalStartTime,
                 end: endTime,
                 decisionLog: scheduleDecision.reasoning
@@ -102,44 +197,166 @@ class CalendarService {
         }
     }
 
-    // PARSE IST TIME - Keep as IST, no conversion
+    async updateCalendarEvent(task, newTime) {
+        const hydratedTask = await this.hydrateScheduleTaskFromEmail({
+            ...task,
+            suggested_time: newTime || task.suggested_time
+        });
+        const durationMinutes = hydratedTask.duration ?? hydratedTask.duration_minutes ?? 30;
+        const requestedStart = this.parseIST(this.correctRelativeSuggestedTime(hydratedTask));
+        const scheduleDecision = await this.findPriorityAwareSlot(requestedStart, durationMinutes, hydratedTask);
+        const finalStartTime = scheduleDecision.start;
+        const endTime = new Date(finalStartTime.getTime() + durationMinutes * 60000);
+
+        if (!task.outlook_event_id || String(task.outlook_event_id).startsWith("local-")) {
+            return {
+                eventId: task.outlook_event_id || `local-${Date.now()}`,
+                start: finalStartTime,
+                end: endTime,
+                decisionLog: scheduleDecision.reasoning
+            };
+        }
+
+        const token = await tokenManager.getAccessToken();
+        await axios.patch(
+            `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(task.outlook_event_id)}`,
+            {
+                start: {
+                    dateTime: this.getISTLocalString(finalStartTime),
+                    timeZone: "India Standard Time"
+                },
+                end: {
+                    dateTime: this.getISTLocalString(endTime),
+                    timeZone: "India Standard Time"
+                }
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json",
+                    "Prefer": 'outlook.timezone="India Standard Time"'
+                }
+            }
+        );
+
+        return {
+            eventId: task.outlook_event_id,
+            start: finalStartTime,
+            end: endTime,
+            decisionLog: scheduleDecision.reasoning
+        };
+    }
+
+    async cancelMeeting(task) {
+        if (!task.outlook_event_id || String(task.outlook_event_id).startsWith("local-")) {
+            console.log(`[CANCEL] No Outlook event to cancel for task "${task.action_item}"`);
+            return { success: true, localOnly: true };
+        }
+
+        try {
+            const token = await tokenManager.getAccessToken();
+            await axios.delete(
+                `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(task.outlook_event_id)}`,
+                { headers: { Authorization: `Bearer ${token}` } }
+            );
+            console.log(`[CANCEL] Outlook event deleted for: "${task.action_item}"`);
+            return { success: true };
+        } catch (err) {
+            if (err.response?.status === 404) {
+                console.warn(`[CANCEL] Event already deleted from calendar: "${task.action_item}"`);
+                return { success: true };
+            }
+            console.error("[CANCEL] Failed to delete Outlook event:", err.response?.data || err.message);
+            return { success: false, error: err.message };
+        }
+    }
+
+    // PARSE IST TIME - Converts IST ISO string to exact UTC Date object
     parseIST(istTimeString) {
-        // Handle edge cases: null, undefined, or already a Date object
         if (!istTimeString) {
             console.warn("[TIMEZONE] Warning: istTimeString is null/undefined, using current time");
             return new Date();
         }
 
-        // If already a Date object, use it
         if (istTimeString instanceof Date) {
-            console.log(`[TIMEZONE] Input is already a Date: ${istTimeString.toISOString()}`);
             return istTimeString;
         }
 
-        // Convert to string if it's not
         const timeStr = String(istTimeString).trim();
         
         try {
-            // Parse the date components from ISO string like "2026-04-30T10:00:00"
+            // Parse date components from ISO string like "2026-04-30T10:00:00"
             const [datePart, timePart] = timeStr.split('T');
             const [year, month, day] = datePart.split('-').map(Number);
             const [hour, minute, second] = (timePart || '10:00:00').split(':').map(Number);
             
-            // Validate parsed values
             if (!year || !month || !day) {
                 console.warn(`[TIMEZONE] Invalid date format: ${timeStr}`);
                 return new Date();
             }
             
-            // Create date with IST values (no conversion, keep as-is)
-            const istDate = new Date(year, month - 1, day, hour || 10, minute || 0, second || 0);
+            // Create a Date object in UTC by treating these components as UTC
+            const utcDate = new Date(Date.UTC(year, month - 1, day, hour || 10, minute || 0, second || 0));
+            // Convert IST to UTC by subtracting 5.5 hours (330 minutes)
+            utcDate.setMinutes(utcDate.getMinutes() - 330);
             
-            console.log(`[TIMEZONE] Parsed IST: ${timeStr} → Using as: ${istDate.toISOString()}`);
-            return istDate;
+            return utcDate;
         } catch (e) {
             console.error(`[TIMEZONE] Error parsing ${timeStr}:`, e.message);
             return new Date();
         }
+    }
+
+    getISTParts(date) {
+        const formatter = new Intl.DateTimeFormat("en-US", {
+            timeZone: "Asia/Kolkata",
+            year: "numeric",
+            month: "numeric",
+            day: "numeric",
+            hour: "numeric",
+            minute: "numeric",
+            second: "numeric",
+            hour12: false
+        });
+        const partsList = formatter.formatToParts(date);
+        const parts = {};
+        for (const p of partsList) {
+            parts[p.type] = p.value;
+        }
+        return {
+            year: Number(parts.year),
+            month: Number(parts.month),
+            day: Number(parts.day),
+            hour: Number(parts.hour),
+            minute: Number(parts.minute),
+            second: Number(parts.second)
+        };
+    }
+
+    formatIST(date) {
+        return date.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+    }
+
+    getISTLocalString(date) {
+        const parts = this.getISTParts(date);
+        const pad = n => String(n).padStart(2, "0");
+        return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}T${pad(parts.hour)}:${pad(parts.minute)}:${pad(parts.second)}`;
+    }
+
+    isWorkingDayExhausted(date, durationMinutes) {
+        const parts = this.getISTParts(date);
+        const endHourDecimal = parts.hour + (parts.minute + durationMinutes) / 60;
+        return endHourDecimal > 22 || parts.hour < 9; // Outside 9 AM to 10 PM IST
+    }
+
+    moveToNextWorkingDayStart(date) {
+        const temp = new Date(date);
+        temp.setDate(temp.getDate() + 1);
+        const nextParts = this.getISTParts(temp);
+        
+        const pad = n => String(n).padStart(2, "0");
+        const nextDayISTString = `${nextParts.year}-${pad(nextParts.month)}-${pad(nextParts.day)}T09:00:00`;
+        return this.parseIST(nextDayISTString);
     }
 
     // TIMEZONE DETECTION: Detect timezone from sender email domain or header
@@ -156,15 +373,15 @@ class CalendarService {
         if (fromEmail) {
             const domain = fromEmail.split('@')[1]?.toLowerCase() || '';
             if (domain.includes('.in') || domain.includes('india')) {
-                console.log(`[TIMEZONE DETECT] Sender from India domain: ${domain} → IST`);
+                console.log(`[TIMEZONE DETECT] Sender from India domain: ${domain} -> IST`);
                 return 'Asia/Kolkata';
             }
             if (domain.includes('.uk') || domain.includes('london')) {
-                console.log(`[TIMEZONE DETECT] Sender from UK domain: ${domain} → GMT`);
+                console.log(`[TIMEZONE DETECT] Sender from UK domain: ${domain} -> GMT`);
                 return 'Europe/London';
             }
             if (domain.includes('.us') || domain.includes('usa')) {
-                console.log(`[TIMEZONE DETECT] Sender from US domain: ${domain} → EST`);
+                console.log(`[TIMEZONE DETECT] Sender from US domain: ${domain} -> EST`);
                 return 'America/New_York';
             }
         }
@@ -231,11 +448,11 @@ class CalendarService {
     }
 
     getEventStart(calEvent) {
-        return new Date(calEvent.start.dateTime);
+        return this.parseIST(calEvent.start.dateTime);
     }
 
     getEventEnd(calEvent) {
-        return new Date(calEvent.end.dateTime);
+        return this.parseIST(calEvent.end.dateTime);
     }
 
     overlaps(startA, endA, startB, endB) {
@@ -244,26 +461,37 @@ class CalendarService {
 
     async getCalendarEvents(startWindow, endWindow) {
         const token = await tokenManager.getAccessToken();
-        const response = await axios.get(
-            `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${startWindow.toISOString()}&endDateTime=${endWindow.toISOString()}`,
-            { 
-                headers: { 
-                    Authorization: `Bearer ${token}`,
-                    "Prefer": 'outlook.timezone="India Standard Time"' 
-                } 
-            }
-        );
+        try {
+            const response = await axios.get(
+                `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${startWindow.toISOString()}&endDateTime=${endWindow.toISOString()}`,
+                { 
+                    headers: { 
+                        Authorization: `Bearer ${token}`,
+                        "Prefer": 'outlook.timezone="India Standard Time"' 
+                    } 
+                }
+            );
 
-        return response.data.value || [];
+            return response.data.value || [];
+        } catch (err) {
+            if (this.isMailboxCalendarUnavailable(err)) {
+                console.warn("[CALENDAR FALLBACK] Cannot read Outlook calendar for this mailbox. Continuing without conflict lookup.");
+                return [];
+            }
+            throw err;
+        }
     }
 
     async getEventsForDay(start) {
-        const startWindow = new Date(start);
-        startWindow.setHours(0, 0, 0, 0);
-
-        const endWindow = new Date(start);
-        endWindow.setHours(23, 59, 59);
-
+        const parts = this.getISTParts(start);
+        const pad = n => String(n).padStart(2, "0");
+        
+        const startISTStr = `${parts.year}-${pad(parts.month)}-${pad(parts.day)}T00:00:00`;
+        const endISTStr = `${parts.year}-${pad(parts.month)}-${pad(parts.day)}T23:59:59`;
+        
+        const startWindow = this.parseIST(startISTStr);
+        const endWindow = this.parseIST(endISTStr);
+        
         return this.getCalendarEvents(startWindow, endWindow);
     }
 
@@ -320,10 +548,9 @@ class CalendarService {
         const reasoning = [];
 
         while (true) {
-            if (potentialStart.getHours() >= 22) {
-                reasoning.push(`Working day exhausted at ${potentialStart.toLocaleString()}; checking next day at 9:00 AM.`);
-                potentialStart.setDate(potentialStart.getDate() + 1);
-                potentialStart.setHours(9, 0, 0, 0);
+            if (this.isWorkingDayExhausted(potentialStart, durationMinutes)) {
+                reasoning.push(`Working day exhausted or outside limits at ${this.formatIST(potentialStart)} IST; checking next day at 9:00 AM IST.`);
+                potentialStart = this.moveToNextWorkingDayStart(potentialStart);
             }
 
             const conflicts = await this.getConflicts(potentialStart, durationMinutes, ignoredEventIds, reservedSlots);
@@ -335,7 +562,7 @@ class CalendarService {
                 return conflict.end > latest ? conflict.end : latest;
             }, conflicts[0].end);
 
-            reasoning.push(`Next best slot check skipped ${conflicts.length} conflict(s); moving after ${latestConflictEnd.toLocaleString()}.`);
+            reasoning.push(`Next best slot check skipped ${conflicts.length} conflict(s); moving after ${this.formatIST(latestConflictEnd)} IST.`);
             potentialStart = new Date(latestConflictEnd.getTime() + 5 * 60000);
         }
     }
@@ -349,11 +576,11 @@ class CalendarService {
         const newEnd = new Date(newStart.getTime() + durationMinutes * 60000);
         const payload = {
             start: {
-                dateTime: newStart.toISOString(),
+                dateTime: this.getISTLocalString(newStart),
                 timeZone: "India Standard Time"
             },
             end: {
-                dateTime: newEnd.toISOString(),
+                dateTime: this.getISTLocalString(newEnd),
                 timeZone: "India Standard Time"
             }
         };
@@ -430,10 +657,9 @@ class CalendarService {
             reasoning.push(`${blockingConflicts.length} same-or-higher priority conflict(s) block the requested slot; searching after ${latestBlockingEnd.toLocaleString()}.`);
             potentialStart = new Date(latestBlockingEnd.getTime() + 5 * 60000);
 
-            if (potentialStart.getHours() >= 22) {
-                reasoning.push(`No suitable slot remains today; moving search to tomorrow at 9:00 AM.`);
-                potentialStart.setDate(potentialStart.getDate() + 1);
-                potentialStart.setHours(9, 0, 0, 0);
+            if (this.isWorkingDayExhausted(potentialStart, durationMinutes)) {
+                reasoning.push(`No suitable slot remains today at ${this.formatIST(potentialStart)} IST; moving search to tomorrow at 9:00 AM IST.`);
+                potentialStart = this.moveToNextWorkingDayStart(potentialStart);
             }
         }
     }
@@ -469,11 +695,10 @@ class CalendarService {
             }
         }
 
-        // Working Hours logic (9 AM - 10 PM)
-        if (potentialStart.getHours() >= 22) {
-             console.log("[DAY FULL] Pushing to tomorrow...");
-            potentialStart.setDate(potentialStart.getDate() + 1);
-            potentialStart.setHours(9, 0, 0, 0);
+        // Working Hours logic (9 AM - 10 PM IST)
+        if (this.isWorkingDayExhausted(potentialStart, durationMinutes)) {
+            console.log("[DAY FULL] Pushing search to tomorrow at 9:00 AM IST...");
+            potentialStart = this.moveToNextWorkingDayStart(potentialStart);
             return this.findFreeSlot(potentialStart, durationMinutes);
         }
 

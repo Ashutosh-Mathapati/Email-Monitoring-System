@@ -7,12 +7,12 @@ class NotificationService {
             const token = await tokenManager.getAccessToken();
             const mailOptions = {
                 message: {
-                    subject: `✅ Task Completed: ${taskSubject}`,
+                    subject: `Task Completed: ${taskSubject}`,
                     body: {
                         contentType: "HTML",
                         content: `
                             <div style="font-family: sans-serif; border-radius: 8px; border: 1px solid #ddd; padding: 25px; max-width: 500px;">
-                                <h3 style="color: #1a73e8; margin-top: 0;">✅ Task Accomplished</h3>
+                                <h3 style="color: #1a73e8; margin-top: 0;">Task Accomplished</h3>
                                 <p>Your request has been processed and completed by the <b>AI Executive Agent</b>.</p>
                                 <div style="background: #f8f9fa; padding: 15px; border-left: 4px solid #1a73e8;">
                                     <b>Request:</b> ${taskSubject}<br/>

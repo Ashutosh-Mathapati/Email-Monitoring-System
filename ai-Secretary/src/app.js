@@ -16,6 +16,12 @@ const pool = require("./db");
 const app = express();
 const PORT = process.env.PORT || 5000;
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+let agentLoopStarted = false;
+
+function isMeetingSchedulingTask(task) {
+    const intent = String(task?.intent || "").toLowerCase();
+    return intent === "schedule" || intent === "reschedule" || intent === "cancel";
+}
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -40,10 +46,55 @@ app.get("/api/dashboard", async (req, res) => {
     }
 });
 
+app.get("/api/debug/mail", async (req, res) => {
+    try {
+        const email = tokenManager.currentEmail;
+        if (!email) {
+            return res.status(400).json({ error: "No active executive email." });
+        }
+
+        const userRes = await pool.query(
+            "SELECT tracking_start_date FROM users WHERE email = $1",
+            [email.toLowerCase()]
+        );
+        const trackingStartDate = userRes.rows[0]?.tracking_start_date
+            ? new Date(userRes.rows[0].tracking_start_date)
+            : new Date(Date.now() - 24 * 60 * 60 * 1000);
+        
+        // Check if mailbox is unavailable
+        if (emailService.mailboxUnavailable) {
+            return res.json({
+                activeEmail: email,
+                trackingStartDate: trackingStartDate.toISOString(),
+                messageCount: 0,
+                messages: [],
+                mailboxError: "Mailbox is not enabled for Microsoft Graph REST API. Email polling is disabled for this account."
+            });
+        }
+
+        const messages = await emailService.fetchRecentEmails(10);
+
+        res.json({
+            activeEmail: email,
+            trackingStartDate: trackingStartDate.toISOString(),
+            messageCount: messages.length,
+            messages: messages.map(message => ({
+                id: message.id,
+                subject: message.subject,
+                from: message.from?.emailAddress?.address || null,
+                receivedDateTime: message.receivedDateTime,
+                afterTrackingStart: new Date(message.receivedDateTime) >= trackingStartDate
+            }))
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.response?.data || err.message });
+    }
+});
+
 function getMicrosoftLoginUrl(email) {
     const scopes = "openid profile offline_access Mail.Read Calendars.ReadWrite Mail.Send";
     // We add &state=${email} so Microsoft brings it back to us in the callback
-    return `https://login.microsoftonline.com/${process.env.TENANT_ID}/oauth2/v2.0/authorize?client_id=${process.env.CLIENT_ID}&response_type=code&redirect_uri=${encodeURIComponent(process.env.REDIRECT_URI)}&response_mode=query&scope=${encodeURIComponent(scopes)}&state=${email}`;
+    return `https://login.microsoftonline.com/${process.env.TENANT_ID}/oauth2/v2.0/authorize?client_id=${process.env.CLIENT_ID}&response_type=code&redirect_uri=${encodeURIComponent(process.env.REDIRECT_URI)}&response_mode=query&scope=${encodeURIComponent(scopes)}&state=${email}&prompt=select_account`;
 }
 
 // 1. HOME ROUTE
@@ -54,6 +105,20 @@ app.get("/", (req, res) => {
 app.get("/login", (req, res) => {
     const email = tokenManager.currentEmail || "unknown";
     res.redirect(getMicrosoftLoginUrl(email));
+});
+
+app.post("/api/auth/clear-token", (req, res) => {
+    const email = (req.body.email || tokenManager.currentEmail || "").trim().toLowerCase();
+    if (!email) {
+        return res.status(400).json({ success: false, error: "Email is required." });
+    }
+
+    const removed = tokenManager.clearStoredToken(email);
+    if (tokenManager.currentEmail?.toLowerCase() === email) {
+        tokenManager.currentEmail = email;
+    }
+
+    res.json({ success: true, removed });
 });
 
 app.post("/api/signup", async (req, res) => {
@@ -122,6 +187,12 @@ app.post("/api/tasks/approve", async (req, res) => {
 
         if (!currentTask) {
             return res.status(404).json({ error: "Task not found" });
+        }
+
+        if (!isMeetingSchedulingTask(currentTask)) {
+            return res.status(400).json({
+                error: "Scheduling is only available for meeting-intent tasks."
+            });
         }
 
         const lastTaskRes = await pool.query(
@@ -194,49 +265,96 @@ app.get("/auth/callback", async (req, res) => {
 
 // 4. THE MERGED AGENT LOGIC (THE BRAIN)
 async function startAgentLoop() {
-    console.log(`\n--- 🚀 AI EXECUTIVE AGENT ACTIVE: ${tokenManager.currentEmail} ---`);
-    
-    setInterval(async () => {
-        try {
-            let emails = await emailService.fetchNewEmails();
+    if (agentLoopStarted) {
+        console.log(`[AGENT] Agent loop already active for ${tokenManager.currentEmail}.`);
+        return;
+    }
 
-            // 1. FALLBACK: Fetch history if delta is empty
-            if (emails.length === 0) {
-                console.log("[SYNC] Delta empty. Checking recent history...");
-                const token = await tokenManager.getAccessToken();
-                const historyRes = await axios.get("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$top=20", {
-                    headers: { Authorization: `Bearer ${token}` }
-                });
-                emails = historyRes.data.value;
+    agentLoopStarted = true;
+    console.log(`\n--- AI EXECUTIVE AGENT ACTIVE: ${tokenManager.currentEmail} ---`);
+
+    const ensureTrackingStartDate = async () => {
+        const email = tokenManager.currentEmail?.toLowerCase();
+        if (!email) return null;
+
+        const userRes = await pool.query(
+            "SELECT tracking_start_date FROM users WHERE email = $1",
+            [email]
+        );
+
+        if (userRes.rows[0]) {
+            return new Date(userRes.rows[0].tracking_start_date);
+        }
+
+        const defaultStart = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        await pool.query(
+            `INSERT INTO users (email, tracking_start_date)
+             VALUES ($1, $2)
+             ON CONFLICT (email)
+             DO UPDATE SET tracking_start_date = EXCLUDED.tracking_start_date`,
+            [email, defaultStart.toISOString()]
+        );
+        console.warn(`[SYNC] No tracking start found for ${email}. Created default start: ${defaultStart.toISOString()}`);
+        return defaultStart;
+    };
+
+    const pollEmails = async () => {
+        try {
+            const trackingStartDate = await ensureTrackingStartDate();
+            if (!trackingStartDate) {
+                console.warn("[SYNC] No active executive email; skipping mail poll.");
+                return;
             }
 
-            // 2. GET THE USER'S TRACKING TIME FROM DATABASE
-            const userRes = await pool.query("SELECT tracking_start_date FROM users WHERE email = $1", [tokenManager.currentEmail.toLowerCase()]);
-            if (!userRes.rows[0]) return;
+            let emails = await emailService.fetchNewEmails();
 
-            // Convert the DB date to a real JavaScript Date object
-            const trackingStartDate = new Date(userRes.rows[0].tracking_start_date);
+            if (emails.length === 0) {
+                console.log("[SYNC] /me/messages returned 0 email(s) this cycle.");
+                return;
+            }
+
+            console.log(`[SYNC] Evaluating ${emails.length} email(s). Tracking start: ${trackingStartDate.toISOString()}`);
 
             for (const email of emails) {
                 const emailReceivedTime = new Date(email.receivedDateTime);
+                const emailBody = email.body?.content || await emailService.fetchMessageBody(email.id) || email.bodyPreview || "";
+                const emailText = aiService.getEmailText(emailBody);
 
                 // --- THE TRIPLE GATE ---
 
                 // GATE 1: TIME FILTER
                 // If the email arrived BEFORE your tracking cutoff, ignore it.
                 if (emailReceivedTime < trackingStartDate) {
+                    if (process.env.DEBUG_EMAIL_SYNC === "true") {
+                        console.log(`[SKIP] Before tracking start: "${email.subject}" received ${emailReceivedTime.toISOString()}`);
+                    }
                     continue;
                 }
 
                 // GATE 2: DUPLICATE CHECK
-                if (await dbService.isEmailProcessed(email.id)) {
+                const processingState = await dbService.getEmailProcessingState(email.id);
+                if (processingState.has_tasks) {
+                    if (process.env.DEBUG_EMAIL_SYNC === "true") {
+                        console.log(`[SKIP] Already has tasks: "${email.subject}" (${email.id})`);
+                    }
                     continue;
+                }
+
+                if (processingState.seen && !aiService.hasActionCue(email.subject, emailText)) {
+                    if (process.env.DEBUG_EMAIL_SYNC === "true") {
+                        console.log(`[SKIP] Seen no-action email: "${email.subject}" (${email.id})`);
+                    }
+                    continue;
+                }
+
+                if (processingState.seen) {
+                    console.log(`[REPROCESS] Seen email has action cues but no tasks yet: "${email.subject}"`);
                 }
 
                 // ONLY IF IT PASSES BOTH GATES:
                 console.log(`\n[AI START] Analyzing: "${email.subject}"`);
                 const fromEmail = email.from?.emailAddress?.address || null;
-                const aiResponse = await aiService.analyzeEmail(email.subject, email.bodyPreview, fromEmail);
+                const aiResponse = await aiService.analyzeEmail(email.subject, emailText, fromEmail, email.receivedDateTime);
                 
                 // REQUIREMENT 1.5: No action if no meeting intent is detected.
                 if (!aiResponse || aiResponse.action_required === false) {
@@ -251,6 +369,7 @@ async function startAgentLoop() {
                     const badTitles = ["research", "update", "finalize", "schedule", "survey"];
                     const finalTasks = [];
 
+                    const seenTaskKeys = new Set();
                     rawTasks.forEach(task => {
                         const titleText = (task.title || task.action_item || "").toString().trim();
                         const titleWords = titleText.split(" ").filter(Boolean);
@@ -267,6 +386,12 @@ async function startAgentLoop() {
                             console.log(`[VALIDATOR] Split needed for: ${validatedTitle}`);
                         }
 
+                        const dedupeKey = validatedTitle.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+                        if (seenTaskKeys.has(dedupeKey)) {
+                            return;
+                        }
+                        seenTaskKeys.add(dedupeKey);
+
                         finalTasks.push({
                             ...task,
                             title: validatedTitle,
@@ -280,15 +405,64 @@ async function startAgentLoop() {
                     }
 
                     for (const [taskIndex, t] of limitedTasks.entries()) {
+                        const intent = t.intent || "schedule";
+                        const confidence = t.confidence || "HIGH";
+
+                        // Determine status: Needs Clarification if LOW confidence or critical fields missing
+                        let status = 'Awaiting Approval';
+                        if (confidence === 'LOW') {
+                            status = 'Needs Clarification';
+                        }
+
+                        // Auto-route reschedule/cancel intents if we can find the target meeting
+                        if (intent === 'cancel' || intent === 'reschedule') {
+                            const existingScheduled = await pool.query(
+                                `SELECT * FROM tasks 
+                                 WHERE sender_email = $1 
+                                 AND status = 'Scheduled' 
+                                 AND intent = 'schedule'
+                                 ORDER BY end_time DESC LIMIT 1`,
+                                [fromEmail]
+                            );
+
+                            if (existingScheduled.rows.length > 0) {
+                                const existingTask = existingScheduled.rows[0];
+                                if (intent === 'cancel') {
+                                    console.log(`[AUTO-ROUTE] Cancelling meeting "${existingTask.action_item}" via email intent`);
+                                    const cancelResult = await calendarService.cancelMeeting(existingTask);
+                                    if (cancelResult.success) {
+                                        await pool.query(
+                                            "UPDATE tasks SET status = 'Cancelled', outlook_event_id = NULL WHERE id = $1",
+                                            [existingTask.id]
+                                        );
+                                        console.log(`[AUTO-ROUTE] Meeting cancelled: ${existingTask.action_item}`);
+                                        continue; // Skip creating a new task
+                                    }
+                                } else if (intent === 'reschedule' && t.suggested_time) {
+                                    console.log(`[AUTO-ROUTE] Rescheduling meeting "${existingTask.action_item}" to ${t.suggested_time}`);
+                                    await dbService.updateTaskSuggestedTime(existingTask.id, t.suggested_time);
+                                    const schedule = await calendarService.updateCalendarEvent(existingTask, t.suggested_time);
+                                    if (schedule) {
+                                        await dbService.updateScheduledTask(existingTask.id, schedule.eventId, schedule.start, schedule.end);
+                                        console.log(`[AUTO-ROUTE] Meeting rescheduled: ${existingTask.action_item}`);
+                                        continue;
+                                    }
+                                }
+                            }
+                            // If no existing meeting found, fall through to save as Needs Clarification
+                            status = 'Needs Clarification';
+                        }
+
                         const taskData = {
                             action_item: t.title || t.action_item || t.description || "Untitled task",
-                            intent: t.intent || "schedule",
+                            intent,
                             participants: Array.isArray(t.participants) ? t.participants : [],
                             priority: t.priority || "Medium",
-                            confidence: t.confidence || "HIGH",
+                            confidence,
                             duration: t.duration || 30,
                             description: t.description || '', // Task-specific summary
-                            suggested_time: t.suggested_time || null  // Include AI-extracted date/time
+                            suggested_time: t.suggested_time || null,  // Include AI-extracted date/time
+                            status
                         };
 
                         try {
@@ -301,7 +475,7 @@ async function startAgentLoop() {
                                 email.receivedDateTime,
                                 taskIndex
                             );
-                            console.log(`[QUEUED] ${taskData.action_item}`);
+                            console.log(`[QUEUED] [${status}] ${taskData.action_item}`);
                         } catch (dbErr) {
                             console.error("[DB ERROR] Failed to save task:", dbErr.message);
                         }
@@ -310,14 +484,17 @@ async function startAgentLoop() {
                     console.log(`[QUEUED] ${limitedTasks.length} context-rich tasks processed.`);
                     await dbService.markEmailAsSeen(email.id);
                 } else {
-                    console.log(`[IGNORE] AI returned action_required but no meeting tasks for: "${email.subject}"`);
+                    // Fallback handled inside AIService.analyzeEmail already.
                     await dbService.markEmailAsSeen(email.id);
                 }
             }
         } catch (err) {
             console.error("Loop Error:", err.message);
         }
-    }, 30000); // 30 seconds is plenty
+    };
+
+    await pollEmails();
+    setInterval(pollEmails, 30000); // 30 seconds is plenty
 
     setInterval(processTaskCompletions, 60000); // Checks every 1 minute for finished scheduled tasks
 }

@@ -2,18 +2,31 @@ const express = require("express");
 const router = express.Router();
 const dbService = require("../services/DbService");
 const calendarService = require("../services/CalendarService");
+const tokenManager = require("../TokenManager");
+const pool = require("../db");
 
+function isMeetingSchedulingTask(task) {
+    const intent = String(task?.intent || "").toLowerCase();
+    return intent === "schedule" || intent === "reschedule" || intent === "cancel";
+}
+
+// Get dashboard cards for the current logged-in executive
 router.get("/dashboard", async (req, res) => {
     try {
-        const data = await dbService.getDashboardCards();
+        const email = tokenManager.currentEmail;
+        if (!email) {
+            console.log("[Router Dashboard] No active executive email found, returning empty list.");
+            return res.json([]);
+        }
+        const data = await dbService.getDashboardCards(email);
         res.json(data);
     } catch (err) {
-        console.error("Dashboard Error:", err.message);
+        console.error("Dashboard Router Error:", err.message);
         res.status(500).json({ error: "Unable to load dashboard cards." });
     }
 });
 
-// NEW: Get task details including extracted time
+// Get detailed task by ID
 router.get("/:id", async (req, res) => {
     try {
         const task = await dbService.getTaskById(req.params.id);
@@ -37,12 +50,31 @@ router.get("/:id", async (req, res) => {
     }
 });
 
+// Approve and schedule task with Requirement 8 Stacking & Dependent adjustment
 router.post("/approve/:id", async (req, res) => {
     try {
         const task = await dbService.getTaskById(req.params.id);
 
         if (!task) {
             return res.status(404).json({ success: false, error: "Task not found." });
+        }
+
+        if (!isMeetingSchedulingTask(task)) {
+            return res.status(400).json({
+                success: false,
+                error: "Scheduling is only available for meeting-intent tasks."
+            });
+        }
+
+        // Stacking Logic (Requirement 8): Move after the end of the last scheduled task of this email
+        const lastTaskRes = await pool.query(
+            "SELECT end_time FROM tasks WHERE email_id = $1 AND status = 'Scheduled' ORDER BY end_time DESC LIMIT 1",
+            [task.email_id]
+        );
+
+        if (lastTaskRes.rows.length > 0) {
+            task.suggested_time = lastTaskRes.rows[0].end_time;
+            console.log(`[ROUTE REQ 8] Stacking after previous task: ${task.suggested_time}`);
         }
 
         const schedule = await calendarService.scheduleTask(task);
@@ -59,31 +91,7 @@ router.post("/approve/:id", async (req, res) => {
     }
 });
 
-// NEW: Correct the suggested time before scheduling
-router.post("/correct-time/:id", async (req, res) => {
-    try {
-        const { newTime } = req.body; // Expected format: "2026-05-01T11:00:00"
-        const task = await dbService.getTaskById(req.params.id);
-
-        if (!task) {
-            return res.status(404).json({ success: false, error: "Task not found." });
-        }
-
-        if (!newTime) {
-            return res.status(400).json({ success: false, error: "New time required in format: YYYY-MM-DDTHH:mm:ss" });
-        }
-
-        // Update the task's suggested_time in the database
-        await dbService.updateTaskSuggestedTime(req.params.id, newTime);
-        
-        res.json({ success: true, message: `Time corrected to ${newTime}` });
-    } catch (err) {
-        console.error("Time Correction Error:", err.message);
-        res.status(500).json({ success: false, error: "Time correction failed." });
-    }
-});
-
-// NEW: Reschedule an already-scheduled task with new time
+// Reschedule task
 router.post("/reschedule/:id", async (req, res) => {
     try {
         const { newTime } = req.body; // Expected format: "2026-05-01T11:00:00"
@@ -93,18 +101,23 @@ router.post("/reschedule/:id", async (req, res) => {
             return res.status(404).json({ success: false, error: "Task not found." });
         }
 
+        if (!isMeetingSchedulingTask(task)) {
+            return res.status(400).json({
+                success: false,
+                error: "Rescheduling is only available for meeting-intent tasks."
+            });
+        }
+
         if (!newTime) {
             return res.status(400).json({ success: false, error: "New time required" });
         }
 
-        // Update suggested time
+        // Update suggested time in database
         await dbService.updateTaskSuggestedTime(req.params.id, newTime);
         
-        // If already scheduled, reschedule it
+        // If already scheduled, reschedule in calendar
         if (task.status === 'Scheduled' && task.outlook_event_id) {
-            // Parse new time as IST and convert to UTC for scheduling
-            task.suggested_time = newTime;
-            const schedule = await calendarService.scheduleTask(task);
+            const schedule = await calendarService.updateCalendarEvent(task, newTime);
             
             if (schedule) {
                 await dbService.updateScheduledTask(req.params.id, schedule.eventId, schedule.start, schedule.end);
@@ -118,6 +131,51 @@ router.post("/reschedule/:id", async (req, res) => {
     } catch (err) {
         console.error("Reschedule Error:", err.message);
         res.status(500).json({ success: false, error: "Reschedule failed." });
+    }
+});
+
+// Cancel a scheduled meeting: delete Outlook event + mark task as Cancelled
+router.post("/cancel/:id", async (req, res) => {
+    try {
+        const task = await dbService.getTaskById(req.params.id);
+        if (!task) {
+            return res.status(404).json({ success: false, error: "Task not found." });
+        }
+
+        const result = await calendarService.cancelMeeting(task);
+        if (!result.success) {
+            return res.status(500).json({ success: false, error: result.error || "Failed to cancel meeting." });
+        }
+
+        await pool.query(
+            "UPDATE tasks SET status = 'Cancelled', outlook_event_id = NULL WHERE id = $1",
+            [req.params.id]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        console.error("Cancel Error:", err.message);
+        res.status(500).json({ success: false, error: "Cancel failed." });
+    }
+});
+
+// Modify task details (Title, Description, Priority, Confidence, Order)
+router.post("/edit/:id", async (req, res) => {
+    try {
+        const { action_item, description, priority, confidence, task_order } = req.body;
+        await pool.query(
+            `UPDATE tasks 
+             SET action_item = COALESCE($1, action_item), 
+                 task_description = COALESCE($2, task_description), 
+                 priority = COALESCE($3, priority),
+                 confidence = COALESCE($4, confidence),
+                 task_order = COALESCE($5, task_order)
+             WHERE id = $6`,
+            [action_item, description, priority, confidence, task_order, req.params.id]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        console.error("Edit Task Error:", err.message);
+        res.status(500).json({ error: "Failed to edit task" });
     }
 });
 

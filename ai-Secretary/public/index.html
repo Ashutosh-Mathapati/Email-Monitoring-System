@@ -1,90 +1,163 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Executive Assistant Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <title>Executive Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700;900&display=swap" rel="stylesheet">
     <style>
-        body { background: #120808; color: #fff; }
-        .glass-card { background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255,255,255,0.05); backdrop-filter: blur(10px); }
-        .task-row { background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255,255,255,0.05); }
-        .btn-schedule { background: linear-gradient(135deg, #2563eb, #1d4ed8); }
+        body { 
+            background-color: #120808; 
+            background-image: radial-gradient(#2d1212 1px, transparent 1px); 
+            background-size: 30px 30px;
+            color: #fff;
+            font-family: 'Outfit', sans-serif;
+        }
+        .glass-card { 
+            background: rgba(25, 14, 14, 0.65); 
+            border: 1px solid rgba(255, 255, 255, 0.05); 
+            backdrop-filter: blur(16px); 
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+        .task-row { 
+            background: rgba(255, 255, 255, 0.015); 
+            border: 1px solid rgba(255, 255, 255, 0.03); 
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .task-row:hover {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(255, 255, 255, 0.08);
+            transform: translateY(-2px);
+        }
+        .btn-glow-blue { 
+            background: linear-gradient(135deg, #2563eb, #1d4ed8); 
+            box-shadow: 0 0 15px rgba(37, 99, 235, 0.3);
+        }
+        .btn-glow-blue:hover {
+            box-shadow: 0 0 25px rgba(37, 99, 235, 0.55);
+        }
         input[type="number"]::-webkit-inner-spin-button { display: none; }
-        /* Fix for the Dropdown colors */
+        
         select {
-            appearance: none; /* Removes default arrow */
+            appearance: none;
             background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
             background-repeat: no-repeat;
             background-position: right 0.7rem center;
             background-size: 1em;
             padding-right: 2.5rem !important;
         }
-        /* Style the popup list (options) */
         select option {
-            background-color: #1a0b0b; /* Dark background */
+            background-color: #1a0b0b;
             color: white;
             padding: 10px;
         }
-        /* Specific Priority Colors */
-        .pri-high { background-color: rgba(239, 68, 68, 0.1); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.2); }
-        .pri-med  { background-color: rgba(245, 158, 11, 0.1); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.2); }
-        .pri-low  { background-color: rgba(16, 185, 129, 0.1); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.2); }
     </style>
 </head>
-<body class="p-8 font-sans">
+<body class="p-8 min-h-screen">
     <!-- Reschedule Modal -->
-    <div id="rescheduleModal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center z-50">
-        <div class="bg-slate-900 border border-white/10 rounded-[32px] shadow-2xl p-8 max-w-md w-full mx-4">
-            <h2 class="text-2xl font-bold text-white mb-4">Reschedule Task</h2>
-            <div class="mb-6">
-                <p id="rescheduleTaskName" class="text-sm text-slate-400 mb-4 italic"></p>
-                <label class="block text-sm font-bold text-slate-300 mb-2 uppercase tracking-widest">New Date & Time</label>
-                <input type="datetime-local" id="rescheduleDateTime" class="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white focus:border-blue-500 focus:outline-none">
-                <p class="text-xs text-slate-500 mt-2">Format will be converted to IST</p>
+    <div id="rescheduleModal" class="hidden fixed inset-0 bg-black/85 flex items-center justify-center z-50 backdrop-blur-md">
+        <div class="bg-[#1f1111] border border-white/10 rounded-[32px] shadow-2xl p-8 max-w-md w-full mx-4">
+            <h2 class="text-2xl font-black text-white mb-2 uppercase tracking-wide">Reschedule Task</h2>
+            <p id="rescheduleTaskName" class="text-xs text-slate-400 mb-6 italic border-l-2 border-orange-500 pl-3"></p>
+            
+            <div class="mb-8">
+                <label class="block text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">New Date & Time (IST)</label>
+                <input type="datetime-local" id="rescheduleDateTime" class="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white focus:border-orange-500 focus:outline-none transition color-scheme-dark">
+                <p class="text-[10px] text-slate-500 mt-2 font-medium">Task will be updated to this exact time in calendar.</p>
             </div>
-            <div class="flex gap-3">
-                <button onclick="closeRescheduleModal()" class="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 text-white px-4 py-2 rounded-xl font-bold text-sm uppercase tracking-widest transition">
+            
+            <div class="flex gap-4">
+                <button onclick="closeRescheduleModal()" class="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 py-3.5 rounded-2xl font-bold text-xs uppercase tracking-widest transition">
                     Cancel
                 </button>
-                <button onclick="confirmReschedule()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl font-bold text-sm uppercase tracking-widest transition">
+                <button onclick="confirmReschedule()" class="flex-1 bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white py-3.5 rounded-2xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-orange-500/20 transition active:scale-95">
                     Reschedule
                 </button>
             </div>
         </div>
     </div>
 
+    <!-- Edit Task Modal -->
+    <div id="editModal" class="hidden fixed inset-0 bg-black/85 flex items-center justify-center z-50 backdrop-blur-md">
+        <div class="bg-[#1f1111] border border-white/10 rounded-[32px] shadow-2xl p-8 max-w-lg w-full mx-4">
+            <h2 class="text-2xl font-black text-white mb-2 uppercase tracking-wide">Modify Task Details</h2>
+            <p class="text-slate-400 text-xs mb-6">Modify details or clarify ambiguous points before approval.</p>
+            
+            <div class="space-y-5 mb-8">
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Task Action Item</label>
+                    <input type="text" id="editActionItem" class="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white focus:border-orange-500 focus:outline-none transition">
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Description</label>
+                    <textarea id="editDescription" rows="3" class="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white focus:border-orange-500 focus:outline-none transition"></textarea>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Priority</label>
+                        <select id="editPriority" class="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white focus:border-orange-500 focus:outline-none cursor-pointer">
+                            <option value="High">High</option>
+                            <option value="Medium">Medium</option>
+                            <option value="Low">Low</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Confidence</label>
+                        <select id="editConfidence" class="w-full bg-white/5 border border-white/10 rounded-2xl p-4 text-white focus:border-orange-500 focus:outline-none cursor-pointer">
+                            <option value="HIGH">High</option>
+                            <option value="MEDIUM">Medium</option>
+                            <option value="LOW">Low</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="flex gap-4">
+                <button onclick="closeEditModal()" class="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 py-3.5 rounded-2xl font-bold text-xs uppercase tracking-widest transition">
+                    Cancel
+                </button>
+                <button onclick="confirmEdit()" class="flex-1 bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white py-3.5 rounded-2xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-blue-500/20 transition active:scale-95">
+                    Save Changes
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Container -->
     <div class="max-w-6xl mx-auto">
-        <!-- Header Section -->
+        <!-- Header -->
         <header class="flex justify-between items-center mb-12">
             <div class="flex items-center gap-4">
-                <div class="bg-orange-600 p-3 rounded-2xl shadow-lg shadow-orange-900/20">
+                <div class="bg-gradient-to-br from-orange-500 to-red-600 p-3.5 rounded-2xl shadow-lg shadow-orange-950/20">
                     <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
                 </div>
                 <div>
-                    <h1 class="text-2xl font-black tracking-tight uppercase">Executive Agent</h1>
-                    <p class="text-xs text-slate-500 font-bold tracking-widest uppercase opacity-60">AI-Powered Inbox Management</p>
+                    <h1 class="text-2xl font-black tracking-tight uppercase">Executive Secretariat</h1>
+                    <p class="text-xs text-slate-500 font-bold tracking-widest uppercase opacity-65">AI-Powered Inbox & Calendar Agent</p>
                 </div>
             </div>
             <div class="flex gap-4">
-                <div class="flex items-center gap-2 bg-white/5 px-4 py-2 rounded-full border border-white/10">
+                <div class="flex items-center gap-2 bg-white/5 px-4.5 py-2 rounded-full border border-white/10">
                     <div class="w-2 h-2 bg-green-500 rounded-full animate-ping"></div>
-                    <span class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Live</span>
+                    <span class="text-[9px] font-black uppercase tracking-widest text-slate-400">Agent Active</span>
                 </div>
-                <button onclick="loadDashboard()" class="bg-white/5 border border-white/10 px-6 py-2 rounded-full font-bold text-sm hover:bg-white/10 transition">Refresh Dashboard</button>
+                <button onclick="loadDashboard()" class="bg-white/5 border border-white/10 px-6 py-2 rounded-full font-bold text-xs uppercase tracking-widest hover:bg-white/10 transition duration-300">Refresh</button>
             </div>
         </header>
 
         <!-- Stats Bar -->
         <div id="stats-bar" class="grid grid-cols-3 gap-6 mb-12"></div>
 
-        <!-- Email Groups -->
+        <!-- Dashboard Cards Container -->
         <div id="dashboard-container" class="space-y-10"></div>
     </div>
 
     <script>
         function getPriorityColor(p) {
-            if (p === 'High') return 'text-red-400 border-red-500/30 bg-red-500/10';
-            if (p === 'Medium') return 'text-orange-400 border-orange-500/30 bg-orange-500/10';
-            return 'text-green-400 border-green-500/30 bg-green-500/10';
+            if (p === 'High') return 'text-red-400 border-red-500/25 bg-red-500/10 pri-high';
+            if (p === 'Medium') return 'text-orange-400 border-orange-500/25 bg-orange-500/10 pri-med';
+            return 'text-green-400 border-green-500/25 bg-green-500/10 pri-low';
         }
 
         function formatParticipants(participants) {
@@ -94,107 +167,174 @@
             return 'None';
         }
 
-        async function loadDashboard() {
-            const res = await fetch('/api/dashboard');
-            const groups = await res.json();
-            const container = document.getElementById('dashboard-container');
-            const statsContainer = document.getElementById('stats-bar');
+        function formatISTDisplay(isoString) {
+            if (!isoString) return '';
+            try {
+                const date = new Date(isoString);
+                if (Number.isNaN(date.getTime())) return isoString;
+                return date.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true });
+            } catch (e) {
+                return isoString;
+            }
+        }
 
-            if (!groups || groups.length === 0) {
-                container.innerHTML = `<div class="glass-card p-20 rounded-[40px] text-center text-slate-500 border-dashed border-2 border-white/5">No active tasks found.</div>`;
+        function isMeetingSchedulingTask(task) {
+            const intent = String(task?.intent || '').toLowerCase();
+            return intent === 'schedule' || intent === 'reschedule' || intent === 'cancel';
+        }
+
+        async function loadDashboard() {
+            try {
+                const res = await fetch('/api/dashboard');
+                const groups = await res.json();
+                const container = document.getElementById('dashboard-container');
+                const statsContainer = document.getElementById('stats-bar');
+
+                if (!groups || groups.length === 0) {
+                    container.innerHTML = `<div class="glass-card p-20 rounded-[40px] text-center text-slate-500 border-dashed border-2 border-white/5">No active tasks or emails found. Ensure setup is correct and you have emails received after the selected start time.</div>`;
+                    statsContainer.innerHTML = `
+                        <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
+                            <div class="text-4xl font-black text-white">0</div>
+                            <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1.5">Total Tasks</div>
+                        </div>
+                        <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
+                            <div class="text-4xl font-black text-red-500">0</div>
+                            <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1.5">High Priority</div>
+                        </div>
+                        <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
+                            <div class="text-4xl font-black text-green-500">0</div>
+                            <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1.5">Scheduled</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Calculate overall stats
+                const totalTasks = groups.reduce((sum, group) => sum + parseInt(group.task_count || 0), 0);
+                const highPriority = groups.reduce((sum, group) => sum + parseInt(group.high_priority_count || 0), 0);
+                const scheduled = groups.reduce((sum, group) => sum + parseInt(group.scheduled_count || 0), 0);
+
                 statsContainer.innerHTML = `
                     <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
-                        <div class="text-4xl font-black text-white">0</div>
-                        <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Total Tasks</div>
+                        <div class="text-4xl font-black text-white">${totalTasks}</div>
+                        <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1.5">Total Tasks</div>
                     </div>
                     <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
-                        <div class="text-4xl font-black text-red-500">0</div>
-                        <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">High Priority</div>
+                        <div class="text-4xl font-black text-red-500">${highPriority}</div>
+                        <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1.5">High Priority</div>
                     </div>
                     <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
-                        <div class="text-4xl font-black text-green-500">0</div>
-                        <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Scheduled</div>
+                        <div class="text-4xl font-black text-green-500">${scheduled}</div>
+                        <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1.5">Scheduled</div>
                     </div>
                 `;
-                return;
-            }
 
-            // Calculate overall stats
-            const totalTasks = groups.reduce((sum, group) => sum + parseInt(group.task_count || 0), 0);
-            const highPriority = groups.reduce((sum, group) => sum + parseInt(group.high_priority_count || 0), 0);
-            const scheduled = groups.reduce((sum, group) => sum + parseInt(group.scheduled_count || 0), 0);
-
-            statsContainer.innerHTML = `
-                <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
-                    <div class="text-4xl font-black text-white">${totalTasks}</div>
-                    <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Total Tasks</div>
-                </div>
-                <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
-                    <div class="text-4xl font-black text-red-500">${highPriority}</div>
-                    <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">High Priority</div>
-                </div>
-                <div class="glass-card p-8 rounded-[32px] flex flex-col justify-center border border-white/5">
-                    <div class="text-4xl font-black text-green-500">${scheduled}</div>
-                    <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Scheduled</div>
-                </div>
-            `;
-
-            container.innerHTML = groups.map(group => `
-                <div class="glass-card rounded-[40px] overflow-hidden shadow-2xl">
-                    <div class="p-8 border-b border-white/5 flex justify-between items-center">
-                        <div class="flex items-center gap-4">
-                            <div class="bg-white/5 p-3 rounded-2xl border border-white/10"><svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg></div>
-                            <div>
-                                <h3 class="text-xl font-bold">${group.subject}</h3>
-                                <p class="text-slate-500 text-xs font-medium mt-0.5">From: ${group.sender_email}</p>
-                            </div>
-                        </div>
-                        <div class="bg-white/5 px-4 py-2 rounded-full border border-white/10 text-[10px] font-bold uppercase tracking-widest text-orange-400">
-                            ${group.task_count} Tasks
-                        </div>
-                    </div>
-                    <div class="p-8 space-y-4">
-                        ${group.tasks.map(task => `
-                            <div class="task-row p-6 rounded-[24px] flex items-center gap-6 hover:bg-white/[0.04] transition-all group">
-                                <input type="number" id="order-${task.id}" value="${task.order}" 
-                                       onchange="triggerUpdate(${task.id})"
-                                       class="w-12 h-12 text-center bg-white/5 border border-white/10 rounded-2xl font-black text-blue-400 outline-none focus:border-blue-500">
-                                
-                                <div class="flex-grow">
-                                    <div class="text-lg font-medium text-slate-300 group-hover:text-white transition">${task.action_item}</div>
-                                    <div class="mt-1 text-[10px] text-slate-500 uppercase font-black tracking-widest">
-                                        Intent: ${task.intent || 'schedule'} | Attendees: ${formatParticipants(task.participants)}
-                                    </div>
-                                    ${task.description ? `<div class="mt-1 text-[9px] text-slate-400 italic">${task.description}</div>` : ''}
+                const prioOrder = { 'High': 0, 'Medium': 1, 'Low': 2 };
+                groups.forEach(g => {
+                    g.tasks.sort((a, b) => (prioOrder[a.priority] ?? 1) - (prioOrder[b.priority] ?? 1));
+                });
+                container.innerHTML = groups.map(group => `
+                    <div class="glass-card rounded-[36px] overflow-hidden">
+                        <div class="p-8 border-b border-white/5 flex justify-between items-center bg-white/[0.01]">
+                            <div class="flex items-center gap-4">
+                                <div class="bg-white/5 p-3 rounded-2xl border border-white/10">
+                                    <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
                                 </div>
-
-                                <select id="priority-${task.id}" onchange="triggerUpdate(${task.id})" 
-                                        class="text-[10px] font-bold px-4 py-2 rounded-full border border-transparent outline-none cursor-pointer tracking-widest uppercase ${getPriorityColor(task.priority)}">
-                                    <option value="High" ${task.priority === 'High' ? 'selected' : ''}>High</option>
-                                    <option value="Medium" ${task.priority === 'Medium' ? 'selected' : ''}>Medium</option>
-                                    <option value="Low" ${task.priority === 'Low' ? 'selected' : ''}>Low</option>
-                                </select>
-
-                                <button onclick="openRescheduleModal(${task.id}, '${task.action_item.replace(/'/g, "\\'")}')"
-                                        class="px-4 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition border border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 shadow-xl active:scale-95 hover:scale-[1.02]">
-                                    Reschedule
-                                </button>
-
-                                <button onclick="dismissTask(${task.id})"
-                                        class="px-4 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white shadow-xl active:scale-95 hover:scale-[1.02]">
-                                    Cancel
-                                </button>
-
-                                <button onclick="approveTask(${task.id}, this)" 
-                                        class="btn-schedule px-8 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition shadow-xl active:scale-95
-                                        ${task.status === 'Scheduled' ? 'opacity-30 cursor-not-allowed shadow-none' : 'hover:scale-[1.02] shadow-blue-500/20'}">
-                                    ${task.status === 'Scheduled' ? 'Done' : 'Schedule'}
-                                </button>
+                                <div>
+                                    <h3 class="text-xl font-extrabold text-slate-200 tracking-tight">${group.subject}</h3>
+                                    <p class="text-slate-500 text-xs font-semibold mt-0.5">From: ${group.sender_email} ${group.received_at ? '• ' + formatISTDisplay(group.received_at) : ''}</p>
+                                </div>
                             </div>
-                        `).join('')}
+                            <div class="bg-white/5 px-4.5 py-1.5 rounded-full border border-white/10 text-[9px] font-black uppercase tracking-widest text-orange-400">
+                                ${group.task_count} Action Items
+                            </div>
+                        </div>
+                        <div class="p-8 space-y-5">
+                            ${group.tasks.map(task => `
+                                <div class="task-row p-6 rounded-[24px] flex items-center gap-6 group">
+                                    <input type="number" id="order-${task.id}" value="${task.order}" 
+                                           onchange="triggerUpdate(${task.id})"
+                                           class="w-12 h-12 text-center bg-white/5 border border-white/10 rounded-2xl font-black text-blue-400 outline-none focus:border-blue-500 text-base transition">
+                                    
+                                    <div class="flex-grow">
+                                        <div class="flex items-center gap-2 flex-wrap mb-1">
+                                            <div class="text-lg font-bold text-slate-300 group-hover:text-white transition duration-300">${task.action_item}</div>
+                                            ${task.duplicate_detected ? `
+                                                <span class="bg-red-500/10 text-red-400 border border-red-500/20 px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest animate-pulse">
+                                                    ⚠️ Duplicate (Resent)
+                                                </span>
+                                            ` : ''}
+                                            ${task.status === 'Needs Clarification' ? `
+                                                <span class="bg-purple-500/10 text-purple-400 border border-purple-500/20 px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest animate-pulse">
+                                                    ⚠️ Needs Clarification
+                                                </span>
+                                            ` : task.confidence === 'LOW' || task.confidence === 'MEDIUM' ? `
+                                                <span class="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest">
+                                                    ⚠️ Clarification Needed
+                                                </span>
+                                            ` : ''}
+                                        </div>
+                                        <div class="text-[10px] text-slate-500 font-bold uppercase tracking-widest flex items-center gap-2 flex-wrap">
+                                            <span>Intent: ${task.intent || 'schedule'}</span>
+                                            <span class="opacity-30">•</span>
+                                            <span>Attendees: ${formatParticipants(task.participants)}</span>
+                                            <span class="opacity-30">•</span>
+                                            <span>Status: <span class="${task.status === 'Needs Clarification' ? 'text-purple-400' : task.status === 'Scheduled' ? 'text-green-400' : task.status === 'Cancelled' ? 'text-red-400' : 'text-slate-400'}">${task.status || 'Awaiting Approval'}</span></span>
+                                            <span class="opacity-30">•</span>
+                                            <span>Confidence: <span class="${task.confidence === 'HIGH' ? 'text-green-400' : task.confidence === 'MEDIUM' ? 'text-amber-400' : 'text-red-400'}">${task.confidence || 'HIGH'}</span></span>
+                                            ${task.suggested_time ? `
+                                                <span class="opacity-30">•</span>
+                                                <span class="text-orange-400">Target Time: ${formatISTDisplay(task.suggested_time)} IST</span>
+                                            ` : ''}
+                                        </div>
+                                        ${task.description ? `<div class="mt-2 text-xs text-slate-400 font-medium border-l border-white/10 pl-3 italic">${task.description}</div>` : ''}
+                                    </div>
+
+                                    <select id="priority-${task.id}" onchange="triggerUpdate(${task.id})" 
+                                            class="text-[10px] font-black px-4 py-2.5 rounded-full border border-transparent outline-none cursor-pointer tracking-widest uppercase transition duration-300 ${getPriorityColor(task.priority)}">
+                                        <option value="High" ${task.priority === 'High' ? 'selected' : ''}>High</option>
+                                        <option value="Medium" ${task.priority === 'Medium' ? 'selected' : ''}>Medium</option>
+                                        <option value="Low" ${task.priority === 'Low' ? 'selected' : ''}>Low</option>
+                                    </select>
+
+                                    <button onclick="openEditModal(${task.id}, '${task.action_item.replace(/'/g, "\\'")}', '${(task.description || '').replace(/'/g, "\\'")}', '${task.priority}', '${task.confidence}')"
+                                            class="px-4 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition border border-sky-500/30 bg-sky-500/10 text-sky-400 hover:bg-sky-500/20 shadow-xl active:scale-95 hover:scale-[1.02] duration-300">
+                                        Modify
+                                    </button>
+
+                                    <button onclick="removeTask(${task.id})"
+                                            class="px-4 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition border border-slate-500/30 bg-slate-500/10 text-slate-400 hover:bg-slate-500/20 shadow-xl active:scale-95 hover:scale-[1.02] duration-300">
+                                        Remove
+                                    </button>
+
+                                    ${isMeetingSchedulingTask(task) ? `
+                                    ${task.status === 'Scheduled' ? `
+                                    <button onclick="openRescheduleModal(${task.id}, '${task.action_item.replace(/'/g, "\\'")}', '${task.suggested_time || ''}')"
+                                            class="px-4 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition border border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 shadow-xl active:scale-95 hover:scale-[1.02] duration-300">
+                                        Reschedule
+                                    </button>
+                                    ` : ''}
+
+                                    <button onclick="approveTask(${task.id}, this)"
+                                            class="px-4 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 shadow-xl active:scale-95 hover:scale-[1.02] duration-300">
+                                        Schedule
+                                    </button>
+
+                                    ${task.status === 'Scheduled' ? `
+                                    <button onclick="cancelScheduledMeeting(${task.id})"
+                                            class="px-4 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white shadow-xl active:scale-95 hover:scale-[1.02] duration-300">
+                                        Cancel Meeting
+                                    </button>
+                                    ` : ''}
+                                    ` : ''}
+                                </div>
+                            `).join('')}
+                        </div>
                     </div>
-                </div>
-            `).join('');
+                `).join('');
+            } catch (err) {
+                console.error("Dashboard Load Error:", err);
+            }
         }
 
         async function triggerUpdate(id) {
@@ -210,10 +350,19 @@
 
         let currentRescheduleTaskId = null;
 
-        function openRescheduleModal(taskId, taskName) {
+        function openRescheduleModal(taskId, taskName, currentSuggestedTime) {
             currentRescheduleTaskId = taskId;
             document.getElementById('rescheduleTaskName').textContent = `Task: ${taskName}`;
-            document.getElementById('rescheduleDateTime').value = '';
+            
+            // Format currentSuggestedTime for input field if exists
+            let val = '';
+            if (currentSuggestedTime) {
+                try {
+                    // Extract YYYY-MM-DDTHH:mm from standard ISO format
+                    val = currentSuggestedTime.substring(0, 16);
+                } catch(e) {}
+            }
+            document.getElementById('rescheduleDateTime').value = val;
             document.getElementById('rescheduleModal').classList.remove('hidden');
         }
 
@@ -231,7 +380,8 @@
                 return;
             }
 
-            const newTime = dateTimeInput.replace('T', 'T') + ':00';
+            // ISO string is already YYYY-MM-DDTHH:mm
+            const newTime = dateTimeInput + ':00';
 
             try {
                 const res = await fetch(`/api/tasks/reschedule/${currentRescheduleTaskId}`, {
@@ -255,26 +405,90 @@
             }
         }
 
+        let currentEditTaskId = null;
+
+        function openEditModal(taskId, actionItem, description, priority, confidence) {
+            currentEditTaskId = taskId;
+            document.getElementById('editActionItem').value = actionItem;
+            document.getElementById('editDescription').value = description;
+            document.getElementById('editPriority').value = priority;
+            document.getElementById('editConfidence').value = confidence;
+            document.getElementById('editModal').classList.remove('hidden');
+        }
+
+        function closeEditModal() {
+            currentEditTaskId = null;
+            document.getElementById('editModal').classList.add('hidden');
+        }
+
+        async function confirmEdit() {
+            if (!currentEditTaskId) return;
+
+            const actionItem = document.getElementById('editActionItem').value;
+            const description = document.getElementById('editDescription').value;
+            const priority = document.getElementById('editPriority').value;
+            const confidence = document.getElementById('editConfidence').value;
+
+            try {
+                const res = await fetch(`/api/tasks/edit/${currentEditTaskId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action_item: actionItem, description, priority, confidence })
+                });
+
+                if (!res.ok) {
+                    alert('Failed to save changes.');
+                    return;
+                }
+
+                closeEditModal();
+                loadDashboard();
+            } catch (err) {
+                alert('Error saving modifications: ' + err.message);
+            }
+        }
+
         document.getElementById('rescheduleModal').addEventListener('click', (e) => {
             if (e.target.id === 'rescheduleModal') {
                 closeRescheduleModal();
             }
         });
 
-        async function dismissTask(id) {
+        document.getElementById('editModal').addEventListener('click', (e) => {
+            if (e.target.id === 'editModal') {
+                closeEditModal();
+            }
+        });
+
+        async function removeTask(id) {
             const res = await fetch(`/api/tasks/delete/${id}`, { method: 'DELETE' });
             if (res.ok) loadDashboard();
         }
 
+        async function cancelScheduledMeeting(id) {
+            if (!confirm('Cancel this scheduled meeting?')) return;
+            const res = await fetch(`/api/tasks/cancel/${id}`, { method: 'POST' });
+            if (res.ok) {
+                loadDashboard();
+            } else {
+                const data = await res.json();
+                alert(data.error || 'Failed to cancel meeting.');
+            }
+        }
+
         async function approveTask(id, btn) {
-            if (btn.innerText === 'DONE') return;
+            if (btn.innerText === 'Scheduled') return;
             btn.innerText = "...";
-            const res = await fetch('/api/tasks/approve', {
+            const res = await fetch(`/api/tasks/approve/${id}`, {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ id })
+                headers: {'Content-Type': 'application/json'}
             });
-            if (res.ok) loadDashboard();
+            if (res.ok) {
+                loadDashboard();
+            } else {
+                alert("Scheduling failed. Please check for calendar overlaps or verify credentials.");
+                loadDashboard();
+            }
         }
 
         loadDashboard();

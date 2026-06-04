@@ -24,6 +24,14 @@ class TokenManager {
         return false;
     }
 
+    clearStoredToken(email = this.currentEmail) {
+        this.accessToken = null;
+        this.refreshToken = null;
+        this.expiresAt = null;
+        if (!email) return false;
+        return storage.removeToken(email);
+    }
+
     setTokens(data, shouldSave = true) {
         this.accessToken = data.access_token;
         this.refreshToken = data.refresh_token || this.refreshToken;

@@ -41,6 +41,47 @@
     <script>
         let currentRescheduleTaskId = null;
 
+        function escapeHtml(value) {
+            return String(value ?? "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#39;");
+        }
+
+        function escapeJsString(value) {
+            return String(value ?? "").replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n");
+        }
+
+        function formatDateTime(value) {
+            if (!value) return "";
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return "";
+            return date.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+        }
+
+        function isMeetingSchedulingTask(task) {
+            const intent = String(task?.intent || "").toLowerCase();
+            return intent === "schedule" || intent === "reschedule" || intent === "cancel";
+        }
+
+        async function removeTask(id) {
+            const res = await fetch(`/api/tasks/delete/${id}`, { method: 'DELETE' });
+            if (res.ok) loadDashboard();
+        }
+
+        async function cancelScheduledMeeting(id) {
+            if (!confirm('Cancel this scheduled meeting?')) return;
+            const res = await fetch(`/api/tasks/cancel/${id}`, { method: 'POST' });
+            if (res.ok) {
+                loadDashboard();
+            } else {
+                const data = await res.json();
+                alert(data.error || 'Failed to cancel meeting.');
+            }
+        }
+
         async function approve(id) {
             const res = await fetch("/api/tasks/approve", {
                 method: "POST",
@@ -130,44 +171,87 @@
                 return;
             }
 
-            container.innerHTML = cards.map((card) => `
-                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                    <div class="p-5 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
-                        <div>
-                            <h3 class="font-bold text-slate-800 text-lg">${card.subject || "Untitled email"}</h3>
-                            <p class="text-sm text-slate-500">From: ${card.sender_email || "Unknown sender"}</p>
+            const prioOrder = { 'High': 0, 'Medium': 1, 'Low': 2 };
+            container.innerHTML = cards.map((card, cardIndex) => {
+                const tasks = (card.tasks || []).slice().sort((a, b) => (prioOrder[a.priority] ?? 1) - (prioOrder[b.priority] ?? 1));
+                const highCount = Number(card.high_priority_count || 0);
+                const scheduledCount = Number(card.scheduled_count || 0);
+                const sourceSubject = escapeHtml(card.subject || "Untitled email");
+                const sourceSender = escapeHtml(card.sender_email || "Unknown sender");
+                const sourceId = escapeHtml(card.email_id || "");
+                const receivedAt = formatDateTime(card.received_at);
+
+                return `
+                <section class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="p-5 bg-slate-50 border-b border-slate-200">
+                        <div class="flex flex-col gap-4 md:flex-row md:justify-between md:items-start">
+                            <div class="min-w-0">
+                                <p class="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-2">Source email ${cardIndex + 1}</p>
+                                <h3 class="font-bold text-slate-900 text-lg leading-snug break-words">${sourceSubject}</h3>
+                                <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-600">
+                                    <span><b class="text-slate-700">From:</b> ${sourceSender}</span>
+                                    ${receivedAt ? `<span><b class="text-slate-700">Mail time:</b> ${receivedAt}</span>` : ""}
+                                    ${sourceId ? `<span class="font-mono text-xs text-slate-400">ID: ${sourceId.slice(0, 18)}...</span>` : ""}
+                                </div>
+                            </div>
+                            <div class="flex flex-wrap gap-2 shrink-0">
+                                <span class="bg-slate-200 text-slate-700 px-3 py-1 rounded-full text-xs font-bold">${tasks.length} task${tasks.length === 1 ? "" : "s"}</span>
+                                ${highCount ? `<span class="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-bold">${highCount} high</span>` : ""}
+                                ${scheduledCount ? `<span class="bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full text-xs font-bold">${scheduledCount} scheduled</span>` : ""}
+                            </div>
                         </div>
-                        <span class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-bold uppercase">
-                            AI Analyzed
-                        </span>
                     </div>
                     <div class="p-5">
+                        <div class="mb-3 text-xs font-bold uppercase tracking-widest text-slate-500">Tasks from this email</div>
                         <div class="space-y-4">
-                            ${(card.tasks || []).map((task, index) => `
+                            ${tasks.map((task, index) => {
+                                const isSchedulingTask = isMeetingSchedulingTask(task);
+                                return `
                                 <div class="border border-slate-200 rounded-xl p-4 bg-slate-50 hover:bg-slate-100 transition">
                                     <div class="flex items-start gap-3 mb-3">
                                         <span class="text-xs font-bold px-2 py-1 bg-blue-200 text-blue-700 rounded-full">#${index + 1}</span>
                                         <div class="flex-grow">
-                                            <h4 class="font-semibold text-slate-800">${task.action_item}</h4>
-                                            ${task.description ? `<p class="text-sm text-slate-600 mt-1 italic">${task.description}</p>` : ''}
+                                            <h4 class="font-semibold text-slate-800">${escapeHtml(task.action_item)}</h4>
+                                            <p class="text-xs text-slate-500 mt-1">Belongs to: <span class="font-semibold">${sourceSubject}</span></p>
+                                            ${task.description ? `<p class="text-sm text-slate-600 mt-2 italic">${escapeHtml(task.description)}</p>` : ''}
                                         </div>
-                                        <span class="text-xs font-bold ${task.priority === "High" ? "text-red-500" : task.priority === "Medium" ? "text-orange-500" : "text-slate-500"}">${task.priority || "Low"}</span>
+                                        <span class="text-xs font-bold ${task.priority === "High" ? "text-red-500" : task.priority === "Medium" ? "text-orange-500" : "text-slate-500"}">${escapeHtml(task.priority || "Low")}</span>
                                     </div>
-                                    ${task.suggested_time ? `<p class="text-xs text-slate-500 mb-3">Suggested time: ${new Date(task.suggested_time).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</p>` : ''}
+                                    <div class="flex flex-wrap gap-2 mb-3">
+                                        ${task.intent ? `<span class="text-xs bg-white border border-slate-200 text-slate-600 px-2 py-1 rounded-md">Intent: ${escapeHtml(task.intent)}</span>` : ""}
+                                        ${task.confidence ? `<span class="text-xs bg-white border border-slate-200 text-slate-600 px-2 py-1 rounded-md">Confidence: ${escapeHtml(task.confidence)}</span>` : ""}
+                                        ${task.status ? `<span class="text-xs ${task.status === 'Needs Clarification' ? 'bg-purple-100 border-purple-300 text-purple-700' : 'bg-white border-slate-200 text-slate-600'} px-2 py-1 rounded-md">Status: ${escapeHtml(task.status)}</span>` : ""}
+                                        ${!isSchedulingTask ? `<span class="text-xs bg-slate-900 text-white px-2 py-1 rounded-md">Simple task</span>` : ""}
+                                    </div>
+                                    ${task.suggested_time ? `<p class="text-xs text-slate-500 mb-3">Suggested time: ${formatDateTime(task.suggested_time)}</p>` : ''}
                                     <div class="flex gap-2">
+                                        <button onclick="removeTask(${task.id})" class="flex-1 bg-slate-400 hover:bg-slate-500 text-white px-3 py-2 rounded-lg text-sm font-semibold transition">
+                                            Remove
+                                        </button>
+                                        ${isSchedulingTask ? `
                                         <button onclick="approve(${task.id})" class="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-2 rounded-lg text-sm font-semibold transition">
                                             Approve
                                         </button>
-                                        <button onclick="openRescheduleModal(${task.id}, '${task.action_item.replace(/'/g, "\\'")}', '${task.suggested_time || ''}')" class="flex-1 bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg text-sm font-semibold transition">
+                                        ${task.status === 'Scheduled' ? `
+                                        <button onclick="openRescheduleModal(${task.id}, '${escapeJsString(task.action_item)}', '${escapeJsString(task.suggested_time || '')}')" class="flex-1 bg-amber-500 hover:bg-amber-500 text-white px-3 py-2 rounded-lg text-sm font-semibold transition">
                                             Reschedule
                                         </button>
+                                        <button onclick="cancelScheduledMeeting(${task.id})" class="flex-1 bg-red-500 hover:bg-red-600 text-white px-3 py-2 rounded-lg text-sm font-semibold transition">
+                                            Cancel Meeting
+                                        </button>
+                                        ` : ''}
+                                        ` : `
+                                        <span class="flex-1"></span>
+                                        `}
                                     </div>
                                 </div>
-                            `).join("")}
+                            `;
+                            }).join("")}
                         </div>
                     </div>
-                </div>
-            `).join("");
+                </section>
+            `;
+            }).join("");
         }
 
         loadDashboard();
